@@ -1,122 +1,237 @@
-"""
-Content Repurposer with Optimization
-- Free tier support with intelligent truncation
-- Better error handling and retry logic
-- Improved parsing and validation
-- Performance optimizations
-"""
-
 import anthropic
 import openai
 import google.generativeai as genai
 import os
 import re
 import time
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, Any
 from collections import deque
-import random
 from dataclasses import dataclass
+import logging
+from datetime import datetime
+
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s | %(levelname)s | %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger(__name__)
 
 
 @dataclass
 class TierConfig:
-    """Configuration for different API tiers"""
+    #tier config 
     max_input_chars: int
     max_output_tokens: int
     requests_per_minute: int
+    requests_per_day: int
+    tokens_per_minute: int
     min_delay_seconds: float
     name: str
 
 
 class RateLimiter:
-    """Rate limiter for API calls with improved tracking"""
-    
-    def __init__(self, max_requests: int = 15, time_window: int = 60):
-        self.max_requests = max_requests
+    """Enhanced rate limiter with token tracking and daily limits"""
+    def __init__(
+        self, 
+        max_requests_per_minute: int = 15,
+        max_requests_per_day: int = 1500,
+        max_tokens_per_minute: int = 1_000_000,
+        time_window: int = 60
+    ):
+        self.max_requests_per_minute = max_requests_per_minute
+        self.max_requests_per_day = max_requests_per_day
+        self.max_tokens_per_minute = max_tokens_per_minute
         self.time_window = time_window
+        
+        # Per-minute tracking
         self.requests = deque()
+        self.tokens = deque()
+        
+        # Per-day tracking
+        self.daily_requests = deque()
+        self.daily_reset_time = time.time() + 86400  # 24 hours
+        
         self.last_request_time = 0
-        self.min_delay = time_window / max_requests
+        self.min_delay = time_window / max_requests_per_minute
         self.total_requests = 0
+        self.total_tokens = 0
+
     
-    def wait_if_needed(self) -> float:
-        """
-        Wait if rate limit would be exceeded.
-        Returns: Time waited in seconds
-        """
+    def _reset_daily_if_needed(self):
+        """Reset daily counter if 24 hours have passed"""
+        now = time.time()
+        if now >= self.daily_reset_time:
+            old_count = len(self.daily_requests)
+            self.daily_requests.clear()
+            self.daily_reset_time = now + 86400
+            logger.info("=" * 70)
+            logger.info(f"🔄 DAILY COUNTER RESET")
+            logger.info(f"   Previous 24h requests: {old_count}")
+            logger.info(f"   Next reset: {datetime.fromtimestamp(self.daily_reset_time).strftime('%Y-%m-%d %H:%M:%S')}")
+            logger.info("=" * 70)
+    
+    def _estimate_tokens(self, text: str) -> int:
+        """Rough estimate: 4 chars ≈ 1 token"""
+        return max(1, len(text) // 4)
+    
+    def wait_if_needed(self, estimated_input_tokens: int = 0, estimated_output_tokens: int = 0) -> float:
+        """Wait if any rate limit would be exceeded. Returns: Time waited in seconds"""
         now = time.time()
         wait_time = 0
+        total_estimated_tokens = estimated_input_tokens + estimated_output_tokens
         
-        # Remove old requests outside the time window
+        logger.info("-" * 70)
+        logger.info("🔍 RATE LIMIT CHECK STARTED")
+        logger.info(f"   Estimated input tokens: {estimated_input_tokens:,}")
+        logger.info(f"   Estimated output tokens: {estimated_output_tokens:,}")
+        logger.info(f"   Total estimated tokens: {total_estimated_tokens:,}")
+        
+        self._reset_daily_if_needed()
+        
+        # Check 1: Daily Request Limit
+        logger.info(f"   [CHECK 1/4] Daily request limit...")
+        if len(self.daily_requests) >= self.max_requests_per_day:
+            time_until_reset = self.daily_reset_time - now
+            logger.error("=" * 70)
+            logger.error(f"❌ DAILY LIMIT REACHED!")
+            logger.error(f"   Current: {len(self.daily_requests)} / {self.max_requests_per_day}")
+            logger.error(f"   Reset in: {time_until_reset/3600:.2f} hours")
+            logger.error("=" * 70)
+            raise Exception(f"Daily rate limit exceeded. Reset in {time_until_reset/3600:.1f}h")
+        logger.info(f"   ✓ Daily: {len(self.daily_requests)}/{self.max_requests_per_day} requests")
+        
+        # Check 2: Per-Minute Request Limit
+        logger.info(f"   [CHECK 2/4] Per-minute request limit...")
         while self.requests and self.requests[0] < now - self.time_window:
             self.requests.popleft()
         
-        # Check if at limit
-        if len(self.requests) >= self.max_requests:
-            wait_time = self.time_window - (now - self.requests[0]) + 0.5
-            if wait_time > 0:
-                print(f"[RATE LIMITER] At limit ({len(self.requests)}/{self.max_requests}), waiting {wait_time:.1f}s...")
-                time.sleep(wait_time)
-                now = time.time()
+        current_rpm = len(self.requests)
+        logger.info(f"   Current RPM: {current_rpm}/{self.max_requests_per_minute}")
         
-        # Ensure minimum delay between requests
+        if current_rpm >= self.max_requests_per_minute:
+            wait_time = self.time_window - (now - self.requests[0]) + 1.0
+            logger.warning("⏸️  RATE LIMIT: At minute limit!")
+            logger.warning(f"Current: {current_rpm}/{self.max_requests_per_minute} requests")
+            logger.warning(f"Waiting {wait_time:.1f}s for window to expire...")
+            time.sleep(wait_time)
+            now = time.time()
+            logger.info(f"   ✓ Wait completed, continuing...")
+        else:
+            logger.info(f"   ✓ RPM: {current_rpm}/{self.max_requests_per_minute} - OK")
+        
+        # Check 3: Token Per Minute Limit
+        logger.info(f"   [CHECK 3/4] Token per minute limit...")
+        while self.tokens and self.tokens[0][0] < now - self.time_window:
+            self.tokens.popleft()
+        
+        current_tokens = sum(t[1] for t in self.tokens)
+        projected_tokens = current_tokens + total_estimated_tokens
+        
+        logger.info(f"   Current TPM: {current_tokens:,}/{self.max_tokens_per_minute:,}")
+        logger.info(f"   After this call: {projected_tokens:,}/{self.max_tokens_per_minute:,}")
+        
+        if projected_tokens > self.max_tokens_per_minute:
+            if self.tokens:
+                oldest_time = self.tokens[0][0]
+                token_wait = self.time_window - (now - oldest_time) + 1.0
+                logger.warning("⏸️  RATE LIMIT: Token limit would be exceeded!")
+                logger.warning(f"   Current: {current_tokens:,} tokens")
+                logger.warning(f"   Would be: {projected_tokens:,}/{self.max_tokens_per_minute:,}")
+                logger.warning(f"   ⏳ Waiting {token_wait:.1f}s for token window reset...")
+                time.sleep(token_wait)
+                wait_time += token_wait
+                now = time.time()
+                logger.info(f"   ✓ Wait completed, continuing...")
+        else:
+            logger.info(f"   ✓ Tokens: {projected_tokens:,}/{self.max_tokens_per_minute:,} - OK")
+        
+        # Check 4: Minimum Delay Between Requests
+        logger.info(f"   [CHECK 4/4] Minimum delay between requests...")
         time_since_last = now - self.last_request_time
+        
+        if self.last_request_time > 0:
+            logger.info(f"   Time since last request: {time_since_last:.2f}s")
+            logger.info(f"   Minimum required: {self.min_delay:.2f}s")
+        
         if time_since_last < self.min_delay and self.last_request_time > 0:
-            delay = self.min_delay - time_since_last
+            delay = self.min_delay - time_since_last + 0.5
+            logger.warning(f"⏸️  RATE LIMIT: Minimum delay not met!")
+            logger.warning(f"   ⏳ Enforcing {delay:.1f}s delay...")
             time.sleep(delay)
             wait_time += delay
+        else:
+            logger.info(f"   ✓ Delay check passed")
         
         # Record this request
-        self.requests.append(time.time())
-        self.last_request_time = time.time()
+        request_time = time.time()
+        self.requests.append(request_time)
+        self.daily_requests.append(request_time)
+        self.tokens.append((request_time, total_estimated_tokens))
+        self.last_request_time = request_time
         self.total_requests += 1
+        self.total_tokens += total_estimated_tokens
+        
+        logger.info("✅ RATE LIMIT CHECK PASSED")
+        if wait_time > 0:
+            logger.info(f"   Total wait time: {wait_time:.2f}s")
+        logger.info(f"   Request #{self.total_requests} approved")
+        logger.info("-" * 70)
         
         return wait_time
     
     def get_stats(self) -> Dict[str, Any]:
         """Get rate limiter statistics"""
-        return {
+        now = time.time()
+        current_minute_tokens = sum(t[1] for t in self.tokens if t[0] > now - self.time_window)
+        
+        stats = {
             "total_requests": self.total_requests,
-            "current_window_requests": len(self.requests),
-            "max_requests": self.max_requests,
-            "time_window": self.time_window
+            "total_tokens": self.total_tokens,
+            "current_minute_requests": len(self.requests),
+            "current_minute_tokens": current_minute_tokens,
+            "daily_requests": len(self.daily_requests),
+            "max_requests_per_minute": self.max_requests_per_minute,
+            "max_requests_per_day": self.max_requests_per_day,
+            "max_tokens_per_minute": self.max_tokens_per_minute,
+            "time_until_daily_reset": max(0, self.daily_reset_time - now)
         }
+        
+        logger.info("=" * 70)
+        logger.info("📊 RATE LIMITER STATISTICS")
+        logger.info(f"   Total requests (session): {stats['total_requests']}")
+        logger.info(f"   Total tokens (session): {stats['total_tokens']:,}")
+        logger.info(f"   Current minute: {stats['current_minute_requests']}/{stats['max_requests_per_minute']} requests")
+        logger.info(f"   Current minute: {stats['current_minute_tokens']:,}/{stats['max_tokens_per_minute']:,} tokens")
+        logger.info(f"   Daily usage: {stats['daily_requests']}/{stats['max_requests_per_day']} requests")
+        logger.info(f"   Daily reset in: {stats['time_until_daily_reset']/3600:.2f} hours")
+        logger.info("=" * 70)
+        
+        return stats
 
 
 class ContentRepurposer:
-    """
-    Content repurposer with multi-tier support and optimization.
-    Supports free and paid tiers with intelligent content handling.
-    """
-    
-    # Configuration for different tiers
+
     TIER_CONFIGS = {
         "gemini_free": TierConfig(
-            max_input_chars=2500,
-            max_output_tokens=1500,
-            requests_per_minute=15,
-            min_delay_seconds=4.5,
+            max_input_chars=2500, max_output_tokens=1500, requests_per_minute=14,
+            requests_per_day=1400, tokens_per_minute=900_000, min_delay_seconds=5.0,
             name="Gemini Free"
         ),
         "gemini": TierConfig(
-            max_input_chars=30000,
-            max_output_tokens=2048,
-            requests_per_minute=60,
-            min_delay_seconds=1.0,
+            max_input_chars=30000, max_output_tokens=2048, requests_per_minute=360,
+            requests_per_day=10_000, tokens_per_minute=4_000_000, min_delay_seconds=0.2,
             name="Gemini Pro"
         ),
         "claude": TierConfig(
-            max_input_chars=100000,
-            max_output_tokens=4096,
-            requests_per_minute=50,
-            min_delay_seconds=1.2,
+            max_input_chars=100000, max_output_tokens=4096, requests_per_minute=50,
+            requests_per_day=10_000, tokens_per_minute=100_000, min_delay_seconds=1.2,
             name="Claude"
         ),
         "openai": TierConfig(
-            max_input_chars=50000,
-            max_output_tokens=4096,
-            requests_per_minute=60,
-            min_delay_seconds=1.0,
+            max_input_chars=50000, max_output_tokens=4096, requests_per_minute=60,
+            requests_per_day=10_000, tokens_per_minute=150_000, min_delay_seconds=1.0,
             name="OpenAI"
         )
     }
@@ -125,474 +240,289 @@ class ContentRepurposer:
         self.provider = provider.lower().strip()
         self.api_key = api_key
         self.is_free_tier = "free" in self.provider.lower()
-        
-        # Get tier configuration
-        self.tier_config = self.TIER_CONFIGS.get(
-            self.provider,
-            self.TIER_CONFIGS["gemini_free"]
-        )
-        
-        # Setup rate limiter
+        self.tier_config = self.TIER_CONFIGS.get(self.provider, self.TIER_CONFIGS["gemini_free"])
         self.rate_limiter = RateLimiter(
-            max_requests=self.tier_config.requests_per_minute,
+            max_requests_per_minute=self.tier_config.requests_per_minute,
+            max_requests_per_day=self.tier_config.requests_per_day,
+            max_tokens_per_minute=self.tier_config.tokens_per_minute,
             time_window=60
         )
         
-        print(f"✅ Initialized {self.tier_config.name}")
-        print(f"   Max input: {self.tier_config.max_input_chars:,} chars")
-        print(f"   Rate limit: {self.tier_config.requests_per_minute} req/min")
-        
-        # Validate and initialize API client
         self._validate_and_init_client()
+        logger.info("✅ Initialization complete!\n")
     
     def _validate_and_init_client(self):
         """Validate API key and initialize the appropriate client"""
+        logger.info("\n🔐 VALIDATING API KEY")
         
-        # Validation rules
         validation_rules = {
-            "openai": ("sk-", "OpenAI"),
-            "claude": ("sk-ant-", "Claude"),
-            "gemini": ("AIza", "Gemini"),
-            "gemini_free": ("AIza", "Gemini")
+            "openai": ("sk-", "OpenAI"), "claude": ("sk-ant-", "Claude"),
+            "gemini": ("AIza", "Gemini"), "gemini_free": ("AIza", "Gemini")
         }
         
         if self.provider not in validation_rules:
+            logger.error(f"❌ Unsupported provider: {self.provider}")
             raise ValueError(f"❌ Unsupported provider: {self.provider}")
         
         prefix, name = validation_rules[self.provider]
         
         if not self.api_key or not isinstance(self.api_key, str):
+            logger.error(f"❌ Invalid {name} API key")
             raise ValueError(f"❌ Invalid {name} API key: Key must be a non-empty string")
         
         if not self.api_key.startswith(prefix):
+            logger.error(f"❌ Invalid {name} API key: Must start with '{prefix}'")
             raise ValueError(f"❌ Invalid {name} API key: Must start with '{prefix}'")
         
-        # Initialize client based on provider
+        logger.info(f"   ✓ API key format valid for {name}")
+        logger.info(f"   Key prefix: {self.api_key[:10]}...")
+        
         try:
             if self.provider == "claude":
                 self.model_name = "claude-3-5-sonnet-latest"
                 self.client = anthropic.Anthropic(api_key=self.api_key)
-                
+                logger.info(f"   ✓ Claude client initialized - Model: {self.model_name}")
             elif self.provider == "openai":
                 self.model_name = "gpt-4o"
                 openai.api_key = self.api_key
-                
+                logger.info(f"   ✓ OpenAI client initialized - Model: {self.model_name}")
             elif "gemini" in self.provider:
                 genai.configure(api_key=self.api_key)
-                # Use cheaper model for free tier
                 model_name = "gemini-1.5-flash" if self.is_free_tier else "gemini-2.0-flash"
                 self.model = genai.GenerativeModel(model_name)
-                print(f"   Using model: {model_name}")
-                
+                logger.info(f"   ✓ Gemini client initialized - Model: {model_name}")
         except Exception as e:
+            logger.error(f"❌ Failed to initialize {name} client: {str(e)}")
             raise ValueError(f"❌ Failed to initialize {name} client: {str(e)}")
     
     def _truncate_content_intelligently(self, content: str) -> str:
-        """
-        Intelligently truncate content to fit tier limits.
-        Preserves beginning (context) and end (conclusion).
-        """
+        """Intelligently truncate content to fit tier limits"""
         max_chars = self.tier_config.max_input_chars
         
         if len(content) <= max_chars:
+            logger.info(f"   Content size OK: {len(content):,} chars (max: {max_chars:,})")
             return content
         
-        print(f"⚠️  Content: {len(content):,} chars → Truncating to {max_chars:,} chars")
+        logger.warning("⚠️  CONTENT TRUNCATION NEEDED")
+        logger.warning(f"   Original: {len(content):,} chars | Max: {max_chars:,} chars")
         
-        # Strategy: Keep first 65% and last 35% to preserve context and conclusion
-        first_ratio = 0.65
-        last_ratio = 0.35
-        
+        first_ratio, last_ratio = 0.65, 0.35
         first_part_size = int(max_chars * first_ratio)
         last_part_size = int(max_chars * last_ratio)
         
-        first_part = content[:first_part_size]
-        last_part = content[-last_part_size:]
+        truncated = f"{content[:first_part_size]}\n\n[... {len(content) - first_part_size - last_part_size:,} characters truncated ...]\n\n{content[-last_part_size:]}"
         
-        # Add truncation marker
-        truncated = (
-            f"{first_part}\n\n"
-            f"[... {len(content) - first_part_size - last_part_size:,} characters truncated ...]\n\n"
-            f"{last_part}"
-        )
-        
-        # Ensure we don't exceed limit with the marker
         if len(truncated) > max_chars:
             truncated = truncated[:max_chars]
         
-        print(f"✅ Truncated to {len(truncated):,} chars")
+        logger.info(f"   ✓ Truncated to: {len(truncated):,} chars")
         return truncated
     
     def _estimate_token_count(self, text: str) -> int:
         """Rough estimate of token count (4 chars ≈ 1 token)"""
-        return max(1, int(len(text) / 4))
+        return max(1, len(text) // 4)
     
-    def _call_llm(
-        self, 
-        prompt: str, 
-        max_tokens: int = 2000,
-        temperature: float = 0.7
-    ) -> str:
-        """
-        Unified LLM caller with rate limiting and retry logic.
-        """
-        max_attempts = 3
+    def _call_llm(self, prompt: str, max_tokens: int = 2000, temperature: float = 0.7) -> str:
+        """Unified LLM caller with enhanced rate limiting."""
+        logger.info("\n" + "=" * 70)
+        logger.info("🤖 API CALL INITIATED")
+        logger.info("=" * 70)
+        logger.info(f"Provider: {self.provider.upper()} | Max tokens: {max_tokens} | Temp: {temperature}")
+        logger.info(f"Prompt length: {len(prompt):,} chars")
+        
+        max_attempts = 2
         attempt = 0
         
-        # Apply rate limiting
-        wait_time = self.rate_limiter.wait_if_needed()
-        if wait_time > 0:
-            print(f"⏱️  Waited {wait_time:.1f}s for rate limit")
-        
-        # Truncate prompt if needed
         max_prompt_chars = self.tier_config.max_input_chars
         if len(prompt) > max_prompt_chars:
+            logger.warning(f"⚠️  Prompt truncated from {len(prompt):,} to {max_prompt_chars:,} chars")
             prompt = prompt[:max_prompt_chars]
-            print(f"⚠️  Prompt truncated to {max_prompt_chars:,} chars")
+        
+        estimated_input = self._estimate_token_count(prompt)
+        estimated_output = max_tokens
+        
+        logger.info(f"📊 TOKEN ESTIMATION: Input ~{estimated_input:,} | Output ~{estimated_output:,} | Total ~{estimated_input + estimated_output:,}")
+        
+        try:
+            wait_time = self.rate_limiter.wait_if_needed(estimated_input, estimated_output)
+            if wait_time > 0:
+                logger.info(f"⏱️  Total wait time: {wait_time:.2f}s")
+        except Exception as e:
+            logger.error(f"❌ Rate limit check failed: {str(e)}")
+            return f"❌ Rate limit error: {str(e)}"
         
         while attempt < max_attempts:
             try:
+                logger.info(f"\n🔄 ATTEMPT {attempt + 1}/{max_attempts} - {datetime.now().strftime('%H:%M:%S.%f')[:-3]}")
+                call_start = time.time()
+                
                 if self.provider == "claude":
+                    logger.info("   Calling Claude API...")
                     completion = self.client.messages.create(
-                        model=self.model_name,
-                        max_tokens=max_tokens,
-                        messages=[{"role": "user", "content": prompt}],
+                        model=self.model_name, max_tokens=max_tokens,
+                        messages=[{"role": "user", "content": prompt}]
                     )
-                    return completion.content[0].text
-
+                    response = completion.content[0].text
                 elif self.provider == "openai":
+                    logger.info("   Calling OpenAI API...")
                     completion = openai.chat.completions.create(
                         model=self.model_name,
                         messages=[{"role": "user", "content": prompt}],
-                        max_tokens=max_tokens,
-                        temperature=temperature
+                        max_tokens=max_tokens, temperature=temperature
                     )
-                    return completion.choices[0].message.content
-
+                    response = completion.choices[0].message.content
                 elif "gemini" in self.provider:
+                    logger.info("   Calling Gemini API...")
                     result = self.model.generate_content(
                         contents=prompt,
-                        generation_config={
-                            "max_output_tokens": max_tokens,
-                            "temperature": temperature,
-                        },
+                        generation_config={"max_output_tokens": max_tokens, "temperature": temperature}
                     )
-                    
-                    # Handle different response types
-                    if hasattr(result, 'text'):
-                        return result.text
-                    elif hasattr(result, 'parts'):
-                        return ''.join(part.text for part in result.parts if hasattr(part, 'text'))
-                    else:
-                        return ""
+                    response = result.text if hasattr(result, 'text') else ''.join(
+                        part.text for part in result.parts if hasattr(part, 'text')
+                    ) if hasattr(result, 'parts') else ""
+                
+                call_duration = time.time() - call_start
+                logger.info(f"✅ API SUCCESS - Duration: {call_duration:.2f}s | Response: {len(response):,} chars (~{self._estimate_token_count(response):,} tokens)")
+                logger.info("=" * 70)
+                return response
 
             except Exception as e:
                 error_msg = str(e).lower()
+                call_duration = time.time() - call_start
+                logger.error(f"❌ API FAILED - Duration: {call_duration:.2f}s | Error: {str(e)[:200]}")
                 
-                # Check if it's a rate limit error
-                is_rate_limit = any(
-                    keyword in error_msg 
-                    for keyword in ["quota", "rate limit", "429", "too many requests", "resource exhausted"]
-                )
+                is_rate_limit = any(kw in error_msg for kw in ["quota", "rate limit", "429", "too many requests", "resource exhausted"])
                 
                 if is_rate_limit and attempt < max_attempts - 1:
-                    # Extract retry time if available
-                    retry_match = re.search(r"retry in (\d+(?:\.\d+)?)s", str(e), re.IGNORECASE)
-                    
-                    if retry_match:
-                        delay = float(retry_match.group(1)) + 1.0
-                    else:
-                        # Exponential backoff with jitter
-                        base_delay = 2 ** attempt
-                        jitter = random.uniform(0.5, 1.5)
-                        delay = min(60, base_delay + jitter)
-                    
-                    print(f"⚠️  Rate limit hit (attempt {attempt + 1}/{max_attempts})")
-                    print(f"   Waiting {delay:.1f}s before retry...")
+                    delay = 10.0 + (attempt * 5.0)
+                    logger.warning(f"⚠️  RATE LIMIT - Retry {attempt + 1}/{max_attempts} after {delay:.1f}s...")
                     time.sleep(delay)
                     attempt += 1
                     continue
                 else:
-                    # Non-rate-limit error or final attempt
-                    error_summary = str(e)[:200]
-                    return f"❌ Error calling {self.provider.upper()} API: {error_summary}"
+                    logger.error(f"   {'Max retries reached' if is_rate_limit else 'Non-rate-limit error'}")
+                    return f"❌ {'Rate limit exceeded' if is_rate_limit else 'API Error'}: {str(e)[:200]}"
         
-        return f"❌ Error: Rate limit retries exhausted after {max_attempts} attempts"
+        return f"❌ Failed after {max_attempts} attempts"
     
     def _parse_structured_response(self, response: str) -> Dict[str, Any]:
-        """
-        Parse structured response with section markers.
-        Handles various formatting variations.
-        """
-        results = {
-            "core_analysis": "",
-            "twitter_thread": [],
-            "linkedin_post": "",
-            "instagram_caption": "",
-            "tldr": ""
-        }
+        """Parse structured response with section markers"""
+        logger.info(f"\n📝 PARSING RESPONSE ({len(response):,} chars)")
+        
+        results = {"core_analysis": "", "twitter_thread": [], "linkedin_post": "", "instagram_caption": "", "tldr": ""}
         
         try:
-            # Define section markers (with variations)
             sections = {
-                "core_analysis": [
-                    "===CORE_ANALYSIS===",
-                    "===CORE ANALYSIS===",
-                    "CORE_ANALYSIS:",
-                    "CORE ANALYSIS:"
-                ],
-                "twitter": [
-                    "===TWITTER===",
-                    "===TWITTER THREAD===",
-                    "TWITTER_THREAD:",
-                    "TWITTER:"
-                ],
-                "linkedin": [
-                    "===LINKEDIN===",
-                    "===LINKEDIN POST===",
-                    "LINKEDIN_POST:",
-                    "LINKEDIN:"
-                ],
-                "instagram": [
-                    "===INSTAGRAM===",
-                    "===INSTAGRAM CAPTION===",
-                    "INSTAGRAM_CAPTION:",
-                    "INSTAGRAM:"
-                ],
-                "tldr": [
-                    "===TLDR===",
-                    "===TL;DR===",
-                    "TLDR:",
-                    "TL;DR:"
-                ]
+                "core_analysis": ["===CORE_ANALYSIS===", "===CORE ANALYSIS==="],
+                "twitter": ["===TWITTER===", "===TWITTER THREAD==="],
+                "linkedin": ["===LINKEDIN===", "===LINKEDIN POST==="],
+                "instagram": ["===INSTAGRAM===", "===INSTAGRAM CAPTION==="],
+                "tldr": ["===TLDR===", "===TL;DR==="]
             }
             
-            # Parse Core Analysis
             for marker in sections["core_analysis"]:
                 if marker in response:
-                    parts = response.split(marker)
-                    if len(parts) > 1:
-                        next_section = parts[1].split("===")[0]
-                        results["core_analysis"] = next_section.strip()
-                        break
+                    results["core_analysis"] = response.split(marker)[1].split("===")[0].strip()
+                    logger.info(f"   ✓ CORE_ANALYSIS: {len(results['core_analysis'])} chars")
+                    break
             
-            # Parse Twitter Thread
             for marker in sections["twitter"]:
                 if marker in response:
-                    parts = response.split(marker)
-                    if len(parts) > 1:
-                        twitter_section = parts[1].split("===")[0]
-                        
-                        # Extract numbered tweets
-                        for line in twitter_section.split("\n"):
-                            line = line.strip()
-                            # Match: "1. tweet" or "1) tweet" or "1: tweet"
-                            match = re.match(r"^\d+[\.):\s]+(.+)$", line)
-                            if match:
-                                tweet = match.group(1).strip()
-                                # Filter out very short or empty tweets
-                                if tweet and len(tweet) > 15:
-                                    results["twitter_thread"].append(tweet)
-                        break
+                    twitter_section = response.split(marker)[1].split("===")[0]
+                    for line in twitter_section.split("\n"):
+                        match = re.match(r"^\d+[\.):\s]+(.+)$", line.strip())
+                        if match:
+                            tweet = match.group(1).strip()
+                            if len(tweet) > 15:
+                                results["twitter_thread"].append(tweet)
+                    logger.info(f"   ✓ TWITTER: {len(results['twitter_thread'])} tweets")
+                    break
             
-            # Parse LinkedIn
             for marker in sections["linkedin"]:
                 if marker in response:
-                    parts = response.split(marker)
-                    if len(parts) > 1:
-                        linkedin_section = parts[1].split("===")[0]
-                        results["linkedin_post"] = linkedin_section.strip()
-                        break
+                    results["linkedin_post"] = response.split(marker)[1].split("===")[0].strip()
+                    logger.info(f"   ✓ LINKEDIN: {len(results['linkedin_post'])} chars")
+                    break
             
-            # Parse Instagram
             for marker in sections["instagram"]:
                 if marker in response:
-                    parts = response.split(marker)
-                    if len(parts) > 1:
-                        instagram_section = parts[1].split("===")[0]
-                        results["instagram_caption"] = instagram_section.strip()
-                        break
+                    results["instagram_caption"] = response.split(marker)[1].split("===")[0].strip()
+                    logger.info(f"   ✓ INSTAGRAM: {len(results['instagram_caption'])} chars")
+                    break
             
-            # Parse TLDR
             for marker in sections["tldr"]:
                 if marker in response:
-                    parts = response.split(marker)
-                    if len(parts) > 1:
-                        tldr_section = parts[1].split("===")[0]
-                        results["tldr"] = tldr_section.strip()
-                        break
+                    results["tldr"] = response.split(marker)[1].split("===")[0].strip()
+                    logger.info(f"   ✓ TLDR: {len(results['tldr'])} chars")
+                    break
             
-            # Validation: Check if we got meaningful results
-            has_content = any([
-                results["core_analysis"],
-                results["twitter_thread"],
-                results["linkedin_post"],
-                results["instagram_caption"],
-                results["tldr"]
-            ])
-            
-            if not has_content:
-                print("⚠️  Warning: No structured sections found, using fallback")
-                results["core_analysis"] = response[:1000]  # Fallback to raw response
+            if not any(results.values()):
+                logger.warning("⚠️  No sections found, using fallback")
+                results["core_analysis"] = response[:1000]
             else:
-                print(f"✅ Parsed: {len(results['twitter_thread'])} tweets, "
-                      f"{len(results['linkedin_post'])} chars LinkedIn, "
-                      f"{len(results['instagram_caption'])} chars Instagram")
+                logger.info("✅ Parsing completed")
             
             return results
-            
         except Exception as e:
-            print(f"❌ Error parsing response: {e}")
-            # Fallback: return raw response in core_analysis
-            return {
-                "core_analysis": response,
-                "twitter_thread": [],
-                "linkedin_post": "",
-                "instagram_caption": "",
-                "tldr": ""
-            }
+            logger.error(f"❌ Parsing error: {e}")
+            return {"core_analysis": response, "twitter_thread": [], "linkedin_post": "", "instagram_caption": "", "tldr": ""}
     
     def _generate_all_outputs_single_call(self, content: str) -> Dict[str, Any]:
-        """
-        FREE TIER OPTIMIZED: Generate ALL outputs in a SINGLE API call.
-        """
-        max_tokens = self.tier_config.max_output_tokens
+        """FREE TIER: Generate ALL outputs in SINGLE API call"""
+        logger.info("\n🆓 SINGLE CALL STRATEGY")
         
-        prompt = f"""You are a content repurposing expert. Generate ALL of the following from this content in ONE response.
-
-CONTENT TO REPURPOSE:
-{content}
-
-Generate these outputs:
-
-1. CORE ANALYSIS: Extract main thesis, 3-5 key points, tone, target audience, and key data/stats.
-
-2. TWITTER THREAD: Create 8-12 tweets, each under 280 characters. Number them (1., 2., 3., etc.). Make them engaging and actionable.
-
-3. LINKEDIN POST: Write 1000-1500 characters, professional yet conversational. Start with a hook. Include line breaks for readability.
-
-4. INSTAGRAM CAPTION: Write 150-200 character main caption, then add 10-15 relevant hashtags on new lines.
-
-5. TL;DR: Provide a 2-3 sentence summary capturing the core message.
-
-Format your response EXACTLY like this:
-
-===CORE_ANALYSIS===
-[Your analysis here]
-
-===TWITTER===
-1. [tweet 1]
-2. [tweet 2]
-3. [tweet 3]
-...
-
-===LINKEDIN===
-[LinkedIn post here]
-
-===INSTAGRAM===
-[Caption here]
-
-#hashtag1 #hashtag2 #hashtag3 ...
-
-===TLDR===
-[Summary here]
-
-Remember: Use these exact section headers with === markers."""
+        prompt = f"""You are a content repurposing expert. Generate ALL outputs in ONE response.
+        CONTENT: {content}
+        Format EXACTLY as:
+        ===CORE_ANALYSIS===
+        [analysis]
+        ===TWITTER===
+        1. [tweet 1]
+        2. [tweet 2]
+        ===LINKEDIN===
+        [post]
+        ===INSTAGRAM===
+        [caption]
+        #hashtags
+        # ===TLDR===
+        # [summary]"""
         
-        print(f"🔄 Making single API call ({self.tier_config.name})...")
-        response = self._call_llm(prompt, max_tokens=max_tokens)
-        
-        # Parse and return results
-        results = self._parse_structured_response(response)
-        return results
+        response = self._call_llm(prompt, max_tokens=self.tier_config.max_output_tokens)
+        return self._parse_structured_response(response)
     
     def _generate_outputs_separate_calls(self, content: str) -> Dict[str, Any]:
-        """
-        PAID TIER: Generate outputs using optimized separate calls.
-        """
-        print(f"💰 Using multi-call strategy ({self.tier_config.name})")
+        """PAID TIER: Generate outputs using separate calls"""
+        logger.info("\n💰 MULTI-CALL STRATEGY")
         
-        # Step 1: Core analysis
-        core_prompt = f"""Analyze this content and extract:
-1. MAIN THESIS (1 sentence)
-2. KEY POINTS (3-5 bullets)
-3. TONE (professional, casual, technical, etc.)
-4. TARGET AUDIENCE
-5. KEY DATA/STATS (numbers, facts)
-
-Content:
-{content}
-
-Provide a structured analysis."""
+        core = self._call_llm(f"Analyze: {content}\n\nExtract: thesis, key points, tone, audience, data.", max_tokens=800)
         
-        core = self._call_llm(core_prompt, max_tokens=800)
+        batch = self._call_llm(f"Based on: {core}\n\nGenerate formatted outputs.", max_tokens=2000)
         
-        # Step 2: Batch generate platform outputs
-        batch_prompt = f"""Based on this analysis:
-
-{core}
-
-Generate:
-1. TWITTER THREAD (8-12 tweets, max 280 chars each, numbered)
-2. LINKEDIN POST (1000-1500 chars, professional, conversational)
-3. INSTAGRAM CAPTION (150-200 chars + 10-15 hashtags)
-4. TL;DR (2-3 sentence summary)
-
-Use this exact format:
-
-===TWITTER===
-1. [tweet]
-...
-
-===LINKEDIN===
-[post]
-
-===INSTAGRAM===
-[caption]
-#hashtags
-
-===TLDR===
-[summary]"""
-        
-        batch_response = self._call_llm(batch_prompt, max_tokens=2000)
-        
-        # Parse and combine results
-        results = self._parse_structured_response(batch_response)
+        results = self._parse_structured_response(batch)
         results["core_analysis"] = core
-        
         return results
     
     def repurpose_content(self, content: str) -> Dict[str, Any]:
-        """
-        Main repurposing pipeline.
-        Automatically chooses strategy based on tier.
-        """
-        print(f"\n{'='*60}")
-        print(f"REPURPOSING CONTENT ({self.tier_config.name})")
-        print(f"{'='*60}")
-        print(f"Input: {len(content):,} characters")
+        """Main repurposing pipeline"""
+        logger.info("\n" + "=" * 70)
+        logger.info(f"🎯 REPURPOSING CONTENT ({self.tier_config.name})")
+        logger.info(f"   Input: {len(content):,} characters")
+        logger.info("=" * 70)
         
-        # Step 1: Truncate content if needed
         content = self._truncate_content_intelligently(content)
-        
-        # Step 2: Choose strategy based on tier
         start_time = time.time()
         
-        if self.is_free_tier:
-            print("\n🆓 Strategy: Single API call (Free Tier)")
-            results = self._generate_all_outputs_single_call(content)
-        else:
-            print("\n💰 Strategy: Multi-call optimization (Paid Tier)")
-            results = self._generate_outputs_separate_calls(content)
+        results = self._generate_all_outputs_single_call(content) if self.is_free_tier else self._generate_outputs_separate_calls(content)
         
         elapsed = time.time() - start_time
-        
-        # Step 3: Log statistics
         stats = self.rate_limiter.get_stats()
-        print(f"\n{'='*60}")
-        print(f"✅ COMPLETED IN {elapsed:.1f}s")
-        print(f"   API calls: {stats['current_window_requests']}")
-        print(f"   Total requests: {stats['total_requests']}")
-        print(f"{'='*60}\n")
+        
+        logger.info("\n" + "=" * 70)
+        logger.info(f"✅ COMPLETED IN {elapsed:.1f}s")
+        logger.info(f"   API calls (minute): {stats['current_minute_requests']}/{stats['max_requests_per_minute']}")
+        logger.info(f"   Tokens (minute): {stats['current_minute_tokens']:,}/{stats['max_tokens_per_minute']:,}")
+        logger.info(f"   Daily usage: {stats['daily_requests']}/{stats['max_requests_per_day']}")
+        logger.info(f"   Total requests: {stats['total_requests']}")
+        logger.info("=" * 70 + "\n")
         
         return results

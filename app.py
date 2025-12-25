@@ -1,18 +1,11 @@
-"""
-AI Content Repurposing Engine - Optimized Version
-Implements Streamlit best practices for performance and UX
-"""
-
 import streamlit as st
 import os
 from dotenv import load_dotenv
 from content_extractor import ContentExtractor
 from content_repurposer import ContentRepurposer
 
-# Load environment variables
 load_dotenv()
 
-# Page config - must be first Streamlit command
 st.set_page_config(
     page_title="AI Content Repurposer",
     page_icon="🚀",
@@ -23,7 +16,53 @@ st.set_page_config(
 # Custom CSS - consolidated and optimized
 st.markdown("""
 <style>
+    /* Reduce top padding */
+    .block-container {
+        padding-top: 2rem;
+    }
+    
     .stAlert { padding: 1rem; margin: 1rem 0; }
+    
+    /* Glassmorphic Header */
+    .glass-header {
+        background: rgba(255, 255, 255, 0.05);
+        backdrop-filter: blur(10px);
+        -webkit-backdrop-filter: blur(10px);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 20px;
+        padding: 2.5rem;
+        margin-bottom: 2rem;
+        text-align: center;
+        box-shadow: 0 4px 30px rgba(0, 0, 0, 0.1);
+    }
+    
+    .gradient-text {
+        background: linear-gradient(135deg, #FF6B6B 0%, #FFE66D 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        font-weight: 800;
+        font-size: 3rem;
+        margin-bottom: 0.5rem;
+        letter-spacing: -1px;
+    }
+    
+    .subtitle-text {
+        font-size: 1.2rem;
+        color: #e0e0e0;
+        margin-bottom: 1.5rem;
+        font-weight: 300;
+    }
+    
+    .feature-tag {
+        display: inline-block;
+        padding: 0.3rem 0.8rem;
+        background: rgba(255, 255, 255, 0.1);
+        border-radius: 20px;
+        font-size: 0.9rem;
+        margin: 0 0.2rem;
+        color: #ccc;
+    }
+
     .platform-section { 
         background-color: #f0f2f6; 
         padding: 1.5rem; 
@@ -157,12 +196,19 @@ def render_sidebar():
 
 render_sidebar()
 
-# ============ MAIN HEADER ============
-st.title("🚀 AI Content Repurposer")
+# ============ MAIN HEADER (Glassmorphic) ============
 st.markdown("""
-Transform your long-form content into platform-optimized posts in seconds.  
-**Paste a blog URL, YouTube link, or raw text → Get optimized content for Twitter, LinkedIn, Instagram, and more.**
-""")
+<div class="glass-header">
+    <div style="font-size: 4rem; margin-bottom: 1rem;">🚀</div>
+    <div class="gradient-text">AI Content Repurposer</div>
+    <div class="subtitle-text">Transform your long-form content into platform-optimized posts in seconds.</div>
+    <div style="margin-top: 1.5rem;">
+        <span class="feature-tag">🐦 Twitter Threads</span>
+        <span class="feature-tag">💼 LinkedIn Posts</span>
+        <span class="feature-tag">📸 Instagram</span>
+    </div>
+</div>
+""", unsafe_allow_html=True)
 
 # ============ MAIN CONTENT AREA ============
 col1, col2 = st.columns([1, 1])
