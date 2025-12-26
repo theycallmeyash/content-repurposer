@@ -32,7 +32,7 @@ class TierConfig:
 
 
 class RateLimiter:
-    """Enhanced rate limiter with token tracking and daily limits"""
+    """Enhanced rate limiter with token tracking"""
     def __init__(
         self, 
         max_requests_per_minute: int = 15,
@@ -90,7 +90,6 @@ class RateLimiter:
         
         self._reset_daily_if_needed()
         
-        # Check 1: Daily Request Limit
         logger.info(f"   [CHECK 1/4] Daily request limit...")
         if len(self.daily_requests) >= self.max_requests_per_day:
             time_until_reset = self.daily_reset_time - now
@@ -102,7 +101,6 @@ class RateLimiter:
             raise Exception(f"Daily rate limit exceeded. Reset in {time_until_reset/3600:.1f}h")
         logger.info(f"   ✓ Daily: {len(self.daily_requests)}/{self.max_requests_per_day} requests")
         
-        # Check 2: Per-Minute Request Limit
         logger.info(f"   [CHECK 2/4] Per-minute request limit...")
         while self.requests and self.requests[0] < now - self.time_window:
             self.requests.popleft()
@@ -121,7 +119,6 @@ class RateLimiter:
         else:
             logger.info(f"   ✓ RPM: {current_rpm}/{self.max_requests_per_minute} - OK")
         
-        # Check 3: Token Per Minute Limit
         logger.info(f"   [CHECK 3/4] Token per minute limit...")
         while self.tokens and self.tokens[0][0] < now - self.time_window:
             self.tokens.popleft()
@@ -147,7 +144,6 @@ class RateLimiter:
         else:
             logger.info(f"   ✓ Tokens: {projected_tokens:,}/{self.max_tokens_per_minute:,} - OK")
         
-        # Check 4: Minimum Delay Between Requests
         logger.info(f"   [CHECK 4/4] Minimum delay between requests...")
         time_since_last = now - self.last_request_time
         
@@ -288,7 +284,9 @@ class ContentRepurposer:
                 logger.info(f"   ✓ OpenAI client initialized - Model: {self.model_name}")
             elif "gemini" in self.provider:
                 genai.configure(api_key=self.api_key)
-                model_name = "gemini-1.5-flash" if self.is_free_tier else "gemini-2.0-flash"
+                # Updated to use gemini-2.0-flash as verified by user
+                model_name = "gemini-2.0-flash"
+                    
                 self.model = genai.GenerativeModel(model_name)
                 logger.info(f"   ✓ Gemini client initialized - Model: {model_name}")
         except Exception as e:
@@ -296,7 +294,6 @@ class ContentRepurposer:
             raise ValueError(f"❌ Failed to initialize {name} client: {str(e)}")
     
     def _truncate_content_intelligently(self, content: str) -> str:
-        """Intelligently truncate content to fit tier limits"""
         max_chars = self.tier_config.max_input_chars
         
         if len(content) <= max_chars:

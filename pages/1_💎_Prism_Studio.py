@@ -33,20 +33,67 @@ def init_session_state():
 init_session_state()
 
 # ============ HEADER ============
+# ============ HEADER ============
 st.markdown("""
 <div class="glass-header">
-    <div style="font-size: 3rem; margin-bottom: 0.5rem;">💎</div>
-    <div class="gradient-text">PRISM STUDIO</div>
-    <div class="subtitle-text">The workspace for your best work.</div>
+    <div class="header-content">
+        <div class="header-icon">💎</div>
+        <div>
+            <h1 class="gradient-text">PRISM STUDIO</h1>
+            <span class="subtitle-text">Refract your content into infinite social assets.</span>
+        </div>
+    </div>
+    <!-- You could add a small action button here or status indicator -->
+</div>
+""", unsafe_allow_html=True)
+
+# ============ JOURNEY STEPPER ============
+# Determine active step
+step_1 = "active"
+step_2 = "active" if st.session_state.get('extracted_content') else ""
+step_3 = "active" if st.session_state.get('results') else ""
+step_4 = "active" if st.session_state.get('results') else ""
+
+st.markdown(f"""
+<div class="journey-container">
+    <div class="step-item {step_1}">
+        <div class="step-circle">1</div>
+        <div class="step-label">Source</div>
+    </div>
+    <div class="step-line"></div>
+    <div class="step-item {step_2}">
+        <div class="step-circle">2</div>
+        <div class="step-label">Extract</div>
+    </div>
+    <div class="step-line"></div>
+    <div class="step-item {step_3}">
+        <div class="step-circle">3</div>
+        <div class="step-label">Refract</div>
+    </div>
+    <div class="step-line"></div>
+    <div class="step-item {step_4}">
+        <div class="step-circle">4</div>
+        <div class="step-label">Publish</div>
+    </div>
 </div>
 """, unsafe_allow_html=True)
 
 # ============ API KEY CHECK ============
 if not st.session_state.get('api_key'):
-    st.warning("⚠️ No API Key found.")
-    st.info("👉 Please go to **Settings** to configure your API provider/key first.")
-    if st.button("Go to Settings"):
-        st.switch_page("pages/2_⚙️_Settings.py")
+    st.markdown("""
+    <div class="custom-warning">
+        <div class="warning-icon">⚠️</div>
+        <div class="warning-content">
+            <h4>No API Key Found</h4>
+            <p>The Prism needs an energy source to function. Please configure your API key in settings.</p>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    col_warn1, col_warn2, col_warn3 = st.columns([1, 2, 1])
+    with col_warn2:
+        if st.button("⚙️ Configure API Settings", type="primary", use_container_width=True):
+            st.switch_page("pages/2_⚙️_Settings.py")
     st.stop()
 
 
@@ -55,7 +102,7 @@ col1, col2 = st.columns([1, 1])
 
 # ============ LEFT COLUMN: INPUT ============
 with col1:
-    st.header("📥 Input")
+    st.markdown('<div class="section-header">📥 INPUT SOURCE</div>', unsafe_allow_html=True)
     
     input_type = st.selectbox(
         "Source",
@@ -79,7 +126,18 @@ with col1:
         )
         if user_input:
             char_count = len(user_input)
-            st.caption(f"📊 Length: **{char_count:,}** chars")
+            st.markdown(f"""
+            <div class="stats-card">
+                <div class="stat-item">
+                    <div class="stat-value">{char_count:,}</div>
+                    <div class="stat-label">Characters</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value">~{char_count // 4:,}</div>
+                    <div class="stat-label">Tokens</div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
     else:
         placeholder = "https://example.com/article" if "Blog" in input_type else "https://youtube.com/watch?v=..."
         user_input = st.text_input(
@@ -120,7 +178,7 @@ with col1:
 
 # ============ RIGHT COLUMN: OUTPUT ============
 with col2:
-    st.header("📤 Output")
+    st.markdown('<div class="section-header">📤 GENERATED OUTPUT</div>', unsafe_allow_html=True)
     
     if process_button:
         if not user_input:
