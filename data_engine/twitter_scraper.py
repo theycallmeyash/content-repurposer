@@ -2,28 +2,138 @@ from twikit import Client
 import json
 import os
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 import asyncio
+import time
+from typing import Dict, List, Optional, Tuple, Any
+from functools import wraps
+import hashlib
 
 logger = logging.getLogger(__name__)
 
-from twikit import Client
-import json
-import os
-import logging
-from datetime import datetime
-import asyncio
+class TwitterScraperCache:
+    """Simple in-memory and file-based cache for Twitter data"""
+    
+    def __init__(self, cache_dir='twitter_cache'):
+        self.cache_dir = cache_dir
+        self.memory_cache = {}
+        os.makedirs(cache_dir, exist_ok=True)
+    
+    def _get_cache_key(self, key: str) -> str:
+        """Generate a hash-based cache key"""
+        return hashlib.md5(key.encode()).hexdigest()
+    
+    def get(self, key: str, max_age_seconds: int = 3600) -> Optional[Any]:
+        """Get cached data if it exists and is not expired"""
+        # Check memory cache first
+        if key in self.memory_cache:
+            data, timestamp = self.memory_cache[key]
+            if time.time() - timestamp < max_age_seconds:
+                logger.debug(f"Cache HIT (memory): {key}")
+                return data
+            else:
+                del self.memory_cache[key]
+        
+        # Check file cache
+        cache_key = self._get_cache_key(key)
+        cache_file = os.path.join(self.cache_dir, f"{cache_key}.json")
+        
+        if os.path.exists(cache_file):
+            try:
+                with open(cache_file, 'r') as f:
+                    cached = json.load(f)
+                    if time.time() - cached['timestamp'] < max_age_seconds:
+                        logger.debug(f"Cache HIT (file): {key}")
+                        # Load into memory cache
+                        self.memory_cache[key] = (cached['data'], cached['timestamp'])
+                        return cached['data']
+                    else:
+                        os.remove(cache_file)
+            except Exception as e:
+                logger.warning(f"Cache read error: {e}")
+        
+        logger.debug(f"Cache MISS: {key}")
+        return None
+    
+    def set(self, key: str, data: Any):
+        """Set cached data in both memory and file"""
+        timestamp = time.time()
+        self.memory_cache[key] = (data, timestamp)
+        
+        # Also save to file
+        cache_key = self._get_cache_key(key)
+        cache_file = os.path.join(self.cache_dir, f"{cache_key}.json")
+        
+        try:
+            with open(cache_file, 'w') as f:
+                json.dump({'data': data, 'timestamp': timestamp}, f)
+            logger.debug(f"Cache SET: {key}")
+        except Exception as e:
+            logger.warning(f"Cache write error: {e}")
+    
+    def clear(self):
+        """Clear all cache"""
+        self.memory_cache.clear()
+        for file in os.listdir(self.cache_dir):
+            if file.endswith('.json'):
+                os.remove(os.path.join(self.cache_dir, file))
+        logger.info("Cache cleared")
 
-logger = logging.getLogger(__name__)
 
 class TwitterScraper:
     def __init__(self):
         self.cookies_path = 'twitter_cookies.json'
+        self.cache = TwitterScraperCache()
+        self.rate_limit_reset = None
+        self.request_count = 0
+        self.max_requests_per_window = 50  # Conservative limit
+        self.window_start = time.time()
         
     def _get_client(self):
         """Get a fresh client instance"""
         client = Client('en-US', http2=True)
         return client
+    
+    def _check_rate_limit(self):
+        """Check if we're within rate limits"""
+        current_time = time.time()
+        
+        # Reset counter every 15 minutes
+        if current_time - self.window_start > 900:  # 15 minutes
+            self.request_count = 0
+            self.window_start = current_time
+        
+        # If we're approaching the limit, wait
+        if self.request_count >= self.max_requests_per_window:
+            wait_time = 900 - (current_time - self.window_start)
+            if wait_time > 0:
+                logger.warning(f"Rate limit approaching. Waiting {wait_time:.0f} seconds...")
+                time.sleep(wait_time)
+                self.request_count = 0
+                self.window_start = time.time()
+        
+        self.request_count += 1
+    
+    def _retry_with_backoff(self, func, max_retries=3, initial_delay=1):
+        """Retry a function with exponential backoff"""
+        for attempt in range(max_retries):
+            try:
+                return func()
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    raise e
+                
+                # Check if it's a rate limit error
+                if "429" in str(e) or "rate limit" in str(e).lower():
+                    delay = initial_delay * (2 ** attempt) * 2  # Longer delay for rate limits
+                    logger.warning(f"Rate limit hit. Retrying in {delay}s... (attempt {attempt + 1}/{max_retries})")
+                else:
+                    delay = initial_delay * (2 ** attempt)
+                    logger.warning(f"Error: {str(e)}. Retrying in {delay}s... (attempt {attempt + 1}/{max_retries})")
+                
+                time.sleep(delay)
+        
+        raise Exception(f"Failed after {max_retries} retries")
 
     def login(self, username, email, password):
         """
@@ -43,8 +153,6 @@ class TwitterScraper:
             # Check if cookies exist first
             if os.path.exists(self.cookies_path):
                 logger.info("Loading existing cookies...")
-                # Verify cookies work by doing a quick valid check if possible, 
-                # but for now assume they are good to avoid extra calls.
                 return True, "Cookies already exist. Try fetching trends."
             
             asyncio.run(_login_task())
@@ -86,7 +194,11 @@ class TwitterScraper:
                 json.dump(final_cookies, f)
                 
             logger.info(f"Saved {len(final_cookies)} cookies to {self.cookies_path}")
-            return True, "Cookies imported and converted successfully! Try fetching trends now."
+            
+            # Clear cache on new login
+            self.cache.clear()
+            
+            return True, "Cookies imported successfully! Cache cleared. Try fetching trends now."
             
         except json.JSONDecodeError:
             return False, "Invalid JSON format. Please paste a valid JSON object."
@@ -94,71 +206,94 @@ class TwitterScraper:
             logger.error(f"Manual cookie import failed: {str(e)}")
             return False, f"Import failed: {str(e)}"
 
-    def get_trends(self):
-        """
-        Fetch current trends
-        """
-        async def _trends_task():
-            import httpx
-            try:
-                # Use a fresh, standalone httpx client with HTTP/2 enabled
-                # This bypasses any twikit wrappers that might be downgrading to HTTP/1.1
+    def validate_cookies(self) -> bool:
+        """Validate that cookies are still valid"""
+        if not os.path.exists(self.cookies_path):
+            return False
+        
+        try:
+            # Try a simple API call to validate
+            async def _validate():
+                import httpx
+                with open(self.cookies_path, 'r') as f:
+                    saved_cookies = json.load(f)
+                
                 async with httpx.AsyncClient(http2=True) as http_client:
-                    logger.info("DEBUG: Created standalone httpx client (HTTP/2)")
-                    
-                    # Reload cookies
-                    import json
-                    with open(self.cookies_path, 'r') as f:
-                        saved_cookies = json.load(f)
-                    
-                    # Set cookies for .x.com
                     for name, value in saved_cookies.items():
                         http_client.cookies.set(name, value, domain='.x.com')
-
+                    
                     csrf_token = saved_cookies.get('ct0')
-                    if not csrf_token:
-                        logger.warning("DEBUG: 'ct0' cookie not found!")
-
                     headers = {
                         'x-csrf-token': csrf_token,
-                        'x-twitter-active-user': 'yes',
-                        'x-twitter-auth-type': 'OAuth2Session',
-                        'x-twitter-client-language': 'en',
                         'authorization': 'Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA',
-                        'Referer': 'https://x.com/',
-                        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
                     }
                     
-                    url = 'https://api.x.com/1.1/trends/place.json'
-                    params = {'id': '1'} 
+                    # Simple validation call
+                    response = await http_client.get(
+                        'https://api.x.com/1.1/account/verify_credentials.json',
+                        headers=headers
+                    )
+                    return response.status_code == 200
+            
+            return asyncio.run(_validate())
+        except:
+            return False
 
-                    logger.info(f"DEBUG: Making manual request to {url} [STANDALONE HTTP/2]")
-                    response = await http_client.get(url, params=params, headers=headers)
-                    
-                    if response.status_code != 200:
-                        logger.error(f"DEBUG: API returned {response.status_code}: {response.text[:200]}")
-                        raise Exception(f"API Error {response.status_code}")
-                        
-                    data = response.json()
-                    
-                    # Manual Parsing
-                    trends = []
-                    if isinstance(data, list) and len(data) > 0:
-                        trends = data[0].get('trends', [])
-                    
-                    logger.info(f"DEBUG: Manually extracted {len(trends)} trends")
-                    return trends
+    def get_trends(self, use_cache=True, cache_ttl=600, woeid=1):
+        """
+        Fetch current trends with caching
+        cache_ttl: Cache time-to-live in seconds (default 10 minutes)
+        """
+        cache_key = "trends_global"
+        
+        # Check cache first
+        if use_cache:
+            cached_data = self.cache.get(cache_key, max_age_seconds=cache_ttl)
+            if cached_data:
+                logger.info("Returning cached trends")
+                return cached_data, None
+        
+        async def _trends_task():
+            try:
+                self._check_rate_limit()
+                
+                client = self._get_client()
+                client.load_cookies(self.cookies_path)
+                
+                logger.info(f"Fetching trends from API using twikit (WOEID: {woeid})...")
+                
+                # Use twikit to fetch trends
+                # Returns a PlaceTrends TypedDict: {'trends': [PlaceTrend], ...}
+                result = await client.get_place_trends(woeid)
+                
+                trends_data = result.get('trends', [])
+                
+                # Convert PlaceTrend objects to dicts for downstream compatibility
+                formatted_trends = []
+                for trend in trends_data:
+                    formatted_trends.append({
+                        'name': trend.name,
+                        'tweet_volume': trend.tweet_volume,
+                        'url': trend.url,
+                        'query': trend.query
+                    })
+                
+                logger.info(f"Fetched {len(formatted_trends)} trends")
+                return formatted_trends
                 
             except Exception as e:
                 import traceback
-                logger.error(f"DEBUG: Async Task Crash: {traceback.format_exc()}")
+                logger.error(f"Trends fetch error: {traceback.format_exc()}")
                 raise e
 
         try:
             if not os.path.exists(self.cookies_path):
                  return [], "Not logged in. Please login first."
 
-            trends = asyncio.run(_trends_task())
+            def fetch_trends():
+                return asyncio.run(_trends_task())
+            
+            trends = self._retry_with_backoff(fetch_trends)
             
             formatted_trends = []
             
@@ -173,17 +308,21 @@ class TwitterScraper:
                 formatted_trends.append({
                     'keyword': name,
                     'volume': volume_str,
-                    'domain': 'Trending', # Place API doesn't give domain context
+                    'domain': 'Trending',
                 })
+            
+            # Cache the results
+            if use_cache:
+                self.cache.set(cache_key, formatted_trends)
 
             return formatted_trends, None
             
         except Exception as e:
             logger.error(f"Error fetching trends: {str(e)}")
-            if "too many values to unpack" in str(e):
-                 return [], "API Error: Unexpected data format from X. Please retry."
             if "403" in str(e):
-                 return [], "Error 403: Access Denied. Your account might be locked or the cookies are invalid. Try deleting 'twitter_cookies.json' and logging in again."
+                 return [], "Error 403: Access Denied. Cookies may be invalid. Try logging in again."
+            if "429" in str(e):
+                 return [], "Error 429: Rate limit exceeded. Please wait a few minutes."
             return [], f"Error fetching trends: {str(e)}"
     
     def search_tweets(self, query, product='Top', limit=20):
@@ -200,27 +339,40 @@ class TwitterScraper:
              if not os.path.exists(self.cookies_path):
                  return [], "Not logged in. Please login first."
              
-             tweets = asyncio.run(_search_task())
+             self._check_rate_limit()
+             
+             def search():
+                 return asyncio.run(_search_task())
+             
+             tweets = self._retry_with_backoff(search)
              
              results = []
              for tweet in tweets:
+                 print(tweet)
                  results.append({
                      'id': tweet.id,
                      'text': tweet.text,
-                     'user': tweet.user.name,
+                     'user': {
+                        'name': tweet.user.name,
+                        'screen_name': tweet.user.screen_name,
+                        'verified': tweet.user.is_blue_verified or tweet.user.verified,
+                        'followers_count': tweet.user.followers_count,
+                        'friends_count': tweet.user.following_count,
+                        'statuses_count': tweet.user.statuses_count
+                     },
                      'screen_name': tweet.user.screen_name,
                      'created_at': tweet.created_at,
                      'favorite_count': tweet.favorite_count,
                      'retweet_count': tweet.retweet_count
                  })
                  
-             return tweets, None
+             return results, None
              
 
         except Exception as e:
              logger.error(f"Error searching tweets: {str(e)}")
-             if "Event loop" in str(e):
-                 return [], "System Error: Event loop closed. Please retry."
+             if "429" in str(e):
+                 return [], "Rate limit exceeded. Please wait a few minutes."
              return [], f"Error searching tweets: {str(e)}"
 
     def logout(self):
@@ -231,8 +383,11 @@ class TwitterScraper:
             if os.path.exists(self.cookies_path):
                 os.remove(self.cookies_path)
                 logger.info("Cookies deleted. Session reset.")
-                return True, "Session reset successfully. Please log in again."
-            return True, "No session found to reset."
+            
+            # Clear cache on logout
+            self.cache.clear()
+            
+            return True, "Session reset successfully. Cache cleared."
         except Exception as e:
             logger.error(f"Error resetting session: {str(e)}")
             return False, f"Error resetting session: {str(e)}"

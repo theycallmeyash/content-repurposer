@@ -33,7 +33,6 @@ def init_session_state():
 init_session_state()
 
 # ============ HEADER ============
-# ============ HEADER ============
 st.markdown("""
 <div class="glass-header">
     <div class="header-content">

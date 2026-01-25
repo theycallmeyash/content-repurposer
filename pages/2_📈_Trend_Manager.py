@@ -5,8 +5,10 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from data_engine.trend_scraper_v2 import TrendScraperV2
 from data_engine.linkedin_trend_fetcher import LinkedInTrendFetcher
-from data_engine.twitter_scraper import TwitterScraper
+from data_engine.twitter_scraper_advanced import TwitterScraperAdvanced
 import json
+import pandas as pd
+import time
 
 st.set_page_config(page_title="Trend Manager", page_icon="📈", layout="wide")
 
@@ -18,13 +20,23 @@ if 'linkedin_fetcher' not in st.session_state:
     st.session_state.linkedin_fetcher = LinkedInTrendFetcher(api_provider="official")
 
 if 'twitter_scraper' not in st.session_state:
-    st.session_state.twitter_scraper = TwitterScraper()
+    # Upgrade to Advanced Scraper
+    st.session_state.twitter_scraper = TwitterScraperAdvanced()
 
 st.title("📈 Trend Manager")
 st.markdown("Manually input trending topics from Twitter/LinkedIn or fetch from Reddit")
 
 # Tabs
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["➕ Add Trends", "📊 View All Trends", "🔄 Reddit Trends", "💼 LinkedIn Trends", "🐦 X Scraper"])
+tab1, tab2, tab_deep_dive, tab_viral, tab_dataset, tab3, tab4, tab5 = st.tabs([
+    "➕ Add Trends", 
+    "📊 View All Trends", 
+    "� Deep Dive Analysis",
+    "🚀 Viral Content Finder",
+    "💾 Dataset Builder",
+    "�🔄 Reddit Trends", 
+    "💼 LinkedIn Trends", 
+    "🐦 X Scraper"
+])
 
 with tab1:
     st.subheader("Add Manual Trends")
@@ -77,6 +89,139 @@ with tab2:
             st.rerun()
     else:
         st.info("No trends cached yet. Add some manually or fetch from Reddit!")
+
+with tab_deep_dive:
+    st.subheader("🔍 Deep Dive Analysis")
+    st.markdown("Analyze a specific trend or keyword to understand its performance and related topics.")
+    
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        analyze_query = st.text_input("Enter Trend/Hashtag to Analyse", placeholder="#AI or Artificial Intelligence")
+    with col2:
+        analyze_limit = st.number_input("Sample Size", min_value=10, max_value=100, value=50)
+        
+    if st.button("🔎 Analyze Trend"):
+        if analyze_query:
+            with st.spinner(f"analyzing {analyze_query}..."):
+                analysis, error = st.session_state.twitter_scraper.analyze_hashtag_performance(
+                    analyze_query, limit=analyze_limit
+                )
+                
+                if error:
+                    st.error(error)
+                else:
+                    # Display metrics
+                    m1, m2, m3, m4 = st.columns(4)
+                    m1.metric("Total Engagement", f"{analysis['total_engagement']:,}")
+                    m2.metric("Avg Likes", list(analysis.values())[3] if len(analysis) > 3 else "0") # rough fix for dict access
+                    m3.metric("Verified Users", f"{analysis['verified_percentage']}%")
+                    m4.metric("Tweet Count", analysis['tweet_count'])
+                    
+                    # Top Related
+                    st.markdown("### 🔗 Related Hashtags")
+                    tags_df = pd.DataFrame(analysis['top_related_hashtags'])
+                    st.dataframe(tags_df, use_container_width=True)
+                    
+                    # Peak Hours chart
+                    st.markdown("### ⏰ Peak Posting Hours")
+                    hours_data = [{"Hour": k, "Count": v} for k, v in analysis['peak_hours'].items()]
+                    if hours_data:
+                        st.bar_chart(pd.DataFrame(hours_data).set_index("Hour"))
+                    else:
+                        st.write("No peak hours data available.")   
+
+with tab_viral:
+    st.subheader("🚀 Viral Content Finder")
+    st.markdown("Find high-performing content in any niche to model and repurpose.")
+    
+    with st.form("viral_form"):
+        col1, col2 = st.columns(2)
+        with col1:
+            niche_query = st.text_input("Niche / Topic", placeholder="e.g. SaaS Marketing, python coding, indie hacker")
+        with col2:
+            min_likes = st.number_input("Min. Likes", min_value=100, value=1000, step=100)
+            
+        submitted = st.form_submit_button("🔥 Find Viral Tweets")
+        
+        if submitted and niche_query:
+            with st.spinner(f"scouring for viral content in '{niche_query}'..."):
+                viral_tweets, error = st.session_state.twitter_scraper.find_viral_content(
+                    query=niche_query,
+                    min_engagement=min_likes,
+                    limit=20
+                )
+                
+                if error:
+                    st.error(error)
+                elif not viral_tweets:
+                    st.warning("No viral tweets found matching these strict criteria. Try lowering the min likes.")
+                else:
+                    st.success(f"Found {len(viral_tweets)} viral tweets!")
+                    
+                    for t in viral_tweets:
+                        with st.expander(f"❤️ {t.get('total_engagement', 0)}: {t['text'][:50]}..."):
+                            st.write(t['text'])
+                            st.caption(f"By @{t['screen_name']} | {t['created_at']}")
+                            st.code(t['text'], language="text")
+                            if st.button("Add to Trends", key=f"add_{t['id']}"):
+                                st.session_state.scraper.add_manual_trends([t['text']], source="viral_finder")
+                                st.toast("Added to trends!")
+
+with tab_dataset:
+    st.subheader("💾 Dataset Builder")
+    st.markdown("Bulk fetch tweets for multiple keywords to build a dataset for analysis.")
+    
+    dataset_keywords = st.text_area("Enter Keywords (one per line)", height=150)
+    tweets_per_keyword = st.number_input("Tweets per keyword", 10, 100, 20)
+    
+    if st.button("📦 Build & Export Dataset"):
+        if dataset_keywords.strip():
+            keywords = [k.strip() for k in dataset_keywords.split('\n') if k.strip()]
+            all_data = []
+            
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            for i, kw in enumerate(keywords):
+                status_text.text(f"Fetching data for: {kw}...")
+                tweets, _ = st.session_state.twitter_scraper.search_tweets_advanced(kw, limit=tweets_per_keyword)
+                
+                for t in tweets:
+                    t['keyword'] = kw # Tag with keyword
+                    all_data.append(t)
+                
+                progress_bar.progress((i + 1) / len(keywords))
+            
+            status_text.text("✅ Collection Complete!")
+            
+            if all_data:
+                df = pd.DataFrame(all_data)
+                
+                # Flatten nested dicts for CSV export if needed
+                # For now just dump main fields
+                export_df = pd.DataFrame({
+                    'keyword': df['keyword'],
+                    'text': df['text'],
+                    'views': df['user'].apply(lambda x: x.get('followers_count', 0)), # Placeholder mapping
+                    'likes': df['engagement'].apply(lambda x: x.get('likes', 0)),
+                    'retweets': df['engagement'].apply(lambda x: x.get('retweets', 0)),
+                    'created_at': df['created_at'],
+                    'url': df['id'].apply(lambda x: f"https://x.com/i/web/status/{x}")
+                })
+                
+                csv = export_df.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    label="⬇️ Download Dataset (CSV)",
+                    data=csv,
+                    file_name=f"twitter_dataset_{int(time.time())}.csv",
+                    mime="text/csv"
+                )
+                
+                st.write(f"Collected total {len(all_data)} tweets.")
+            else:
+                st.warning("No data collected.")
+        else:
+            st.error("Please enter keywords.")
 
 with tab3:
     st.subheader("Fetch from Reddit")
@@ -240,9 +385,27 @@ with tab5:
              else:
                  st.error(msg)
         
+        # Location Selection
+        woeid_options = {
+            "Global": 1,
+            "United States": 23424977,
+            "India": 23424848,
+            "United Kingdom": 23424975,
+            "Canada": 23424775,
+            "Australia": 23424748,
+            "Custom": 0
+        }
+        
+        selected_location = st.selectbox("📍 Trend Location", list(woeid_options.keys()))
+        
+        if selected_location == "Custom":
+            woeid = st.number_input("Enter Custom WOEID", value=1, step=1)
+        else:
+            woeid = woeid_options[selected_location]
+
         if st.button("🔥 Fetch Trending Topics", use_container_width=True):
-            with st.spinner("Fetching trends from X..."):
-                trends, error = st.session_state.twitter_scraper.get_trends()
+            with st.spinner(f"Fetching trends for WOEID {woeid}..."):
+                trends, error = st.session_state.twitter_scraper.get_trends(woeid=woeid)
                 
                 if error:
                     st.error(error)
