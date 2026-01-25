@@ -1,8 +1,3 @@
-"""
-Content Extractor Module
-Handles extracting content from various sources (blogs, YouTube, raw text)
-"""
-
 import requests
 from bs4 import BeautifulSoup
 from youtube_transcript_api import YouTubeTranscriptApi
@@ -10,265 +5,67 @@ import re
 import json
 from urllib.parse import urlparse, parse_qs
 import logging
+import socket
+import ipaddress
+from abc import ABC, abstractmethod
 
-# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.StreamHandler(),  # Console output
-        logging.FileHandler('content_extractor.log')  # File output
+        logging.StreamHandler(),
+        logging.FileHandler('content_extractor.log')  
     ]
 )
 
 logger = logging.getLogger(__name__)
 
 
-class ContentExtractor:
+# ---------------------------------------------------------------
+# UTILITIES
+# ---------------------------------------------------------------
 
-    # ---------------------------------------------------------------
-    # YOUTUBE
-    # ---------------------------------------------------------------
+class SecurityUtils:
     @staticmethod
-    def extract_youtube_id(url):
-        """Extract video ID from YouTube URL"""
-        logger.info(f"Extracting YouTube ID from URL: {url}")
-        if "youtu.be/" in url:
-            video_id = url.split("youtu.be/")[1].split("?")[0]
-            logger.info(f"Extracted video ID (youtu.be format): {video_id}")
-            return video_id
-        elif "youtube.com/watch" in url:
+    def is_safe_url(url: str) -> bool:
+        """
+        Check if URL is safe to scrape (prevents SSRF).
+        - Must be http or https
+        - Must not be local/private IP
+        """
+        try:
             parsed = urlparse(url)
-            video_id = parse_qs(parsed.query).get("v", [None])[0]
-            logger.info(f"Extracted video ID (youtube.com format): {video_id}")
-            return video_id
-        logger.warning(f"Could not extract video ID from URL: {url}")
-        return None
+            if parsed.scheme not in ('http', 'https'):
+                logger.warning(f"Unsafe scheme: {parsed.scheme}")
+                return False
 
-    @staticmethod
-    def get_youtube_transcript(url):
-        """Extract transcript from YouTube video"""
-        logger.info(f"Starting YouTube transcript extraction for: {url}")
-        try:
-            video_id = ContentExtractor.extract_youtube_id(url)
-            if not video_id:
-                logger.error("Invalid YouTube URL - no video ID found")
-                return None, "Invalid YouTube URL"
+            hostname = parsed.hostname
+            if not hostname:
+                return False
 
-            logger.info(f"Fetching transcript for video ID: {video_id}")
-            transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
-            logger.info(f"Successfully fetched transcript with {len(transcript_list)} segments")
-
-            # Combine transcript text
-            full_transcript = " ".join([item["text"] for item in transcript_list])
-            full_transcript = re.sub(r"\s+", " ", full_transcript)
-
-            logger.info(f"Transcript extracted successfully. Length: {len(full_transcript)} characters")
-            return full_transcript.strip(), None
-
-        except Exception as e:
-            logger.error(f"Error extracting YouTube transcript: {str(e)}", exc_info=True)
-            return None, f"Error extracting YouTube transcript: {str(e)}"
-
-    # ---------------------------------------------------------------
-    # BLOG SCRAPER (Uber, Medium, Substack, Generic)
-    # ---------------------------------------------------------------
-    @staticmethod
-    def scrape_blog_post(url):
-        """Scrape content from any blog URL. Handles Uber, Medium, WP, Substack, etc."""
-        logger.info(f"Starting blog scraping for URL: {url}")
-        try:
-            headers = {
-                "User-Agent": (
-                 "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                 "AppleWebKit/537.36 (KHTML, like Gecko) "
-                 "Chrome/123.0.0.0 Safari/537.36"
-                 ),
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language": "en-US,en;q=0.9",
-                "Accept-Encoding": "gzip, deflate, br",
-                "Connection": "keep-alive",
-                "Upgrade-Insecure-Requests": "1",
-                "Sec-Fetch-Dest": "document",
-                "Sec-Fetch-Mode": "navigate",
-                "Sec-Fetch-Site": "none",
-                "Sec-Fetch-User": "?1",
-                "Referer": "https://www.google.com/",
-                "Pragma": "no-cache",
-                "Cache-Control": "no-cache",
-            }
-
-            logger.info("Sending HTTP request...")
-            resp = requests.get(url, headers=headers, timeout=15)
-            resp.raise_for_status()
-            logger.info(f"Request successful. Status code: {resp.status_code}")
-            
-            soup = BeautifulSoup(resp.text, "html.parser")
-            logger.info("HTML parsed successfully with BeautifulSoup")
-            
-            # Save HTML for debugging
             try:
-                with open('last_scraped.html', 'w', encoding='utf-8') as f:
-                    f.write(soup.prettify())
-                logger.info("Saved HTML to last_scraped.html for debugging")
-            except Exception as e:
-                logger.warning(f"Could not save HTML file: {e}")
+                ip_list = socket.getaddrinfo(hostname, None)
+            except socket.gaierror:
+                # Could not resolve, might be obscure internal name
+                logger.warning(f"Could not resolve hostname: {hostname}")
+                return False
 
-            # ---- 1. UBER BLOG HANDLER (JSON-LD CONTAINS FULL ARTICLE) ----
-            logger.info("Checking for JSON-LD articleBody...")
-            json_ld_tags = soup.find_all("script", type="application/ld+json")
-            logger.info(f"Found {len(json_ld_tags)} JSON-LD script tags")
+            for item in ip_list:
+                # item is (family, type, proto, canonname, sockaddr)
+                ip_addr_str = item[4][0]
+                ip_obj = ipaddress.ip_address(ip_addr_str)
+
+                if ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local:
+                    logger.warning(f"Blocked private/local IP: {ip_addr_str} for host {hostname}")
+                    return False
             
-            for idx, json_ld_tag in enumerate(json_ld_tags):
-                logger.info(f"Parsing JSON-LD tag {idx + 1}...")
-                try:
-                    data = json.loads(json_ld_tag.text)
-                    # Handle both single objects and arrays
-                    data_list = data if isinstance(data, list) else [data]
-                    
-                    for item in data_list:
-                        if isinstance(item, dict) and "articleBody" in item:
-                            content = item["articleBody"]
-                            logger.info(f"✓ Extracted content from JSON-LD. Length: {len(content)} characters")
-                            return content, None
-                except json.JSONDecodeError as e:
-                    logger.warning(f"Failed to parse JSON-LD tag {idx + 1}: {e}")
-
-            # ---- REMOVE NAVIGATION AND NOISE BEFORE EXTRACTION ----
-            logger.info("Removing navigation elements...")
-            nav_count = 0
-            for element in soup.find_all(['nav', 'header', 'footer', 'aside']):
-                element.decompose()
-                nav_count += 1
-            logger.info(f"Removed {nav_count} navigation/header/footer elements")
-            
-            # Remove specific classes/IDs that contain navigation
-            for selector in ['.navigation', '.nav', '.menu', '.header', '.footer', 
-                           '.sidebar', '.widget', '#header', '#footer', '#nav',
-                           '[role="navigation"]', '[role="banner"]', '[role="complementary"]']:
-                removed = soup.select(selector)
-                if removed:
-                    logger.info(f"Removing {len(removed)} elements matching: {selector}")
-                for element in removed:
-                    element.decompose()
-
-            # ---- 2. GENERIC ARTICLE SELECTORS (IMPROVED ORDER) ----
-            selectors = [
-                "[itemprop='articleBody']",  # Most specific
-                "article",
-                ".article-content",
-                ".post-content",
-                ".entry-content",
-                ".post-body",
-                ".blog-post-content",
-                ".content",
-                "#content",
-                "main article",
-                "main",
-                "div[class*='post']",
-                "div[class*='article']",
-                "div[class*='content']",
-            ]
-
-            logger.info("Trying generic article selectors...")
-            for selector in selectors:
-                logger.info(f"Trying selector: {selector}")
-                tags = soup.select(selector)
-                if tags:
-                    logger.info(f"✓ Found {len(tags)} element(s) with selector: {selector}")
-                    # Try each matching element
-                    for idx, tag in enumerate(tags):
-                        # Further clean within the article
-                        for noise in tag.find_all(['script', 'style', 'iframe', 'noscript']):
-                            noise.decompose()
-                        
-                        text = tag.get_text(separator="\n", strip=True)
-                        logger.info(f"Element {idx + 1} text length: {len(text)} characters")
-                        if len(text) > 300:
-                            logger.info(f"✓ Content extracted successfully using selector: {selector}")
-                            return text, None
-                        else:
-                            logger.warning(f"Element {idx + 1} content too short ({len(text)} chars)")
-                else:
-                    logger.info(f"✗ No element found for selector: {selector}")
-
-            # ---- 3. AGGRESSIVE DIV SEARCH ----
-            logger.info("Trying aggressive div search...")
-            all_divs = soup.find_all('div')
-            logger.info(f"Found {len(all_divs)} div elements total")
-            
-            # Find the div with the most paragraph content
-            best_div = None
-            best_length = 0
-            
-            for div in all_divs:
-                paragraphs = div.find_all('p', recursive=False)
-                if paragraphs:
-                    text = "\n\n".join([p.get_text(strip=True) for p in paragraphs])
-                    if len(text) > best_length:
-                        best_length = len(text)
-                        best_div = div
-            
-            if best_div and best_length > 300:
-                logger.info(f"✓ Found best div with {best_length} characters of content")
-                for noise in best_div.find_all(['script', 'style', 'iframe', 'noscript']):
-                    noise.decompose()
-                text = best_div.get_text(separator="\n", strip=True)
-                return text, None
-
-            # ---- 4. PARAGRAPH FALLBACK (WITH BETTER FILTERING) ----
-            logger.info("Falling back to paragraph extraction...")
-            # Try to find the main content area first
-            main_content = soup.find('main') or soup.find('article') or soup.find('body') or soup
-            
-            if main_content:
-                content_type = main_content.name if hasattr(main_content, 'name') else 'soup'
-                logger.info(f"Found main content area: {content_type}")
-                paragraphs = main_content.find_all("p")
-                logger.info(f"Found {len(paragraphs)} paragraphs")
-                
-                if paragraphs:
-                    valid_paragraphs = [p.get_text(strip=True) for p in paragraphs 
-                                       if len(p.get_text(strip=True)) > 30]
-                    logger.info(f"Valid paragraphs (>30 chars): {len(valid_paragraphs)}")
-                    
-                    combined = "\n\n".join(valid_paragraphs)
-                    logger.info(f"Combined paragraph length: {len(combined)} characters")
-                    
-                    if len(combined) > 200:
-                        logger.info("✓ Content extracted from paragraphs")
-                        return combined, None
-                    else:
-                        logger.warning(f"Combined paragraphs too short: {len(combined)} chars")
-            else:
-                logger.warning("Could not find any content area")
-
-            # ---- 5. LAST RESORT: GET ALL TEXT ----
-            logger.info("Last resort: extracting all visible text...")
-            all_text = soup.get_text(separator="\n", strip=True)
-            logger.info(f"All text length: {len(all_text)} characters")
-            
-            if len(all_text) > 500:
-                logger.warning("Returning all text as last resort (may contain noise)")
-                return all_text, None
-
-            logger.error("Unable to extract blog content - all methods failed")
-            logger.error("Check last_scraped.html to see the page structure")
-            return None, "Unable to extract blog content. The page might be JavaScript-rendered or have an unusual structure. Check last_scraped.html for debugging."
-
-        except requests.exceptions.Timeout:
-            logger.error(f"Request timeout for URL: {url}")
-            return None, f"Request timeout after 15 seconds"
-        except requests.exceptions.HTTPError as e:
-            logger.error(f"HTTP error: {e}")
-            return None, f"HTTP error: {e}"
+            return True
         except Exception as e:
-            logger.error(f"Unexpected error while fetching blog: {e}", exc_info=True)
-            return None, f"Error fetching blog: {e}"
+            logger.error(f"Error validating URL safety: {e}")
+            return False
 
-    # ---------------------------------------------------------------
-    # CLEANING PIPELINE (IMPROVED)
-    # ---------------------------------------------------------------
+
+class ContentCleaner:
     @staticmethod
     def remove_duplicate_lines(text: str):
         lines = text.splitlines()
@@ -376,27 +173,265 @@ class ContentExtractor:
         original_length = len(text)
         
         # Apply cleaning steps in order
-        text = ContentExtractor.remove_navigation_text(text)
+        text = ContentCleaner.remove_navigation_text(text)
         logger.info(f"After navigation removal: {len(text)} chars (removed {original_length - len(text)})")
         
-        text = ContentExtractor.remove_duplicate_lines(text)
+        text = ContentCleaner.remove_duplicate_lines(text)
         logger.info(f"After duplicate removal: {len(text)} chars")
         
-        text = ContentExtractor.remove_noise(text)
+        text = ContentCleaner.remove_noise(text)
         logger.info(f"After noise removal: {len(text)} chars")
         
-        text = ContentExtractor.remove_footer(text)
+        text = ContentCleaner.remove_footer(text)
         logger.info(f"After footer removal: {len(text)} chars")
         
-        text = ContentExtractor.normalize(text)
+        text = ContentCleaner.normalize(text)
         logger.info(f"After normalization: {len(text)} chars")
         
         logger.info(f"Cleaning complete. Final length: {len(text)} characters")
         return text.strip()
 
-    # ---------------------------------------------------------------
-    # MAIN ENTRY
-    # ---------------------------------------------------------------
+
+# ---------------------------------------------------------------
+# STRATEGY PATTERN: EXTRACTORS
+# ---------------------------------------------------------------
+
+class BaseExtractor(ABC):
+    """Abstract base class for all content extractors"""
+    
+    @abstractmethod
+    def extract(self, source: str) -> tuple[str | None, str | None]:
+        """
+        Extract content from source.
+        Returns: (content_text, error_message)
+        """
+        pass
+
+
+class YouTubeExtractor(BaseExtractor):
+    """Extractor for YouTube video transcripts"""
+    
+    def extract(self, url: str) -> tuple[str | None, str | None]:
+        logger.info(f"Starting YouTube transcript extraction for: {url}")
+        
+        # Security check
+        if not SecurityUtils.is_safe_url(url):
+             return None, "Invalid or unsafe URL (security restricted)"
+
+        try:
+            video_id = self._extract_youtube_id(url)
+            if not video_id:
+                logger.error("Invalid YouTube URL - no video ID found")
+                return None, "Invalid YouTube URL"
+
+            logger.info(f"Fetching transcript for video ID: {video_id}")
+            
+            # Support both v1.x (instance) and v0.x (static) APIs
+            if hasattr(YouTubeTranscriptApi, 'get_transcript'):
+                # v0.x API
+                transcript_data = YouTubeTranscriptApi.get_transcript(video_id)
+            else:
+                # v1.x API
+                try:
+                    yt = YouTubeTranscriptApi()
+                    transcript_data = yt.fetch(video_id)
+                except Exception as e:
+                     raise e
+
+            logger.info(f"Successfully fetched transcript with {len(transcript_data)} segments")
+
+            # Combine transcript text
+            parts = []
+            for item in transcript_data:
+                if isinstance(item, dict):
+                    parts.append(item.get("text", ""))
+                elif hasattr(item, "text"):
+                     parts.append(item.text)
+                else:
+                    parts.append(str(item))
+
+            full_transcript = " ".join(parts)
+            full_transcript = re.sub(r"\s+", " ", full_transcript)
+
+            logger.info(f"Transcript extracted successfully. Length: {len(full_transcript)} characters")
+            return full_transcript.strip(), None
+
+        except Exception as e:
+            logger.error(f"Error extracting YouTube transcript: {str(e)}", exc_info=True)
+            return None, f"Error extracting YouTube transcript: {str(e)}"
+
+    def _extract_youtube_id(self, url):
+        """Extract video ID from YouTube URL"""
+        logger.info(f"Extracting YouTube ID from URL: {url}")
+        if "youtu.be/" in url:
+            video_id = url.split("youtu.be/")[1].split("?")[0]
+            logger.info(f"Extracted video ID (youtu.be format): {video_id}")
+            return video_id
+        elif "youtube.com/watch" in url:
+            parsed = urlparse(url)
+            video_id = parse_qs(parsed.query).get("v", [None])[0]
+            logger.info(f"Extracted video ID (youtube.com format): {video_id}")
+            return video_id
+        logger.warning(f"Could not extract video ID from URL: {url}")
+        return None
+
+
+class BlogExtractor(BaseExtractor):
+    """Extractor for Blog Posts / Web Articles"""
+
+    def extract(self, url: str) -> tuple[str | None, str | None]:
+        logger.info(f"Starting blog scraping for URL: {url}")
+        
+        # SSRF Check
+        if not SecurityUtils.is_safe_url(url):
+            logger.error(f"Security blocked URL: {url}")
+            return None, "I cannot scrape this URL. It might be local, private, or unsafe."
+
+        try:
+            headers = {
+                "User-Agent": (
+                 "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                 "AppleWebKit/537.36 (KHTML, like Gecko) "
+                 "Chrome/123.0.0.0 Safari/537.36"
+                 ),
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                # ... other headers
+            }
+
+            logger.info("Sending HTTP request...")
+            resp = requests.get(url, headers=headers, timeout=15)
+            resp.raise_for_status()
+            logger.info(f"Request successful. Status code: {resp.status_code}")
+            
+            soup = BeautifulSoup(resp.text, "html.parser")
+            logger.info("HTML parsed successfully with BeautifulSoup")
+            
+            # Extraction Pipeline
+            content = self._try_json_ld(soup)
+            if content: return self._finalize(content)
+
+            self._remove_noise_elements(soup)
+            
+            content = self._try_generic_selectors(soup)
+            if content: return self._finalize(content)
+
+            content = self._try_aggressive_div_search(soup)
+            if content: return self._finalize(content)
+
+            content = self._try_paragraph_fallback(soup)
+            if content: return self._finalize(content)
+            
+            # Last Resort
+            return self._finalize(soup.get_text(separator="\n", strip=True), is_last_resort=True)
+
+        except requests.exceptions.Timeout:
+            logger.error(f"Request timeout for URL: {url}")
+            return None, f"Request timeout after 15 seconds"
+        except requests.exceptions.HTTPError as e:
+            logger.error(f"HTTP error: {e}")
+            return None, f"HTTP error: {e}"
+        except Exception as e:
+            logger.error(f"Unexpected error while fetching blog: {e}", exc_info=True)
+            return None, f"Error fetching blog: {e}"
+
+    def _finalize(self, text, is_last_resort=False):
+        """Run the cleaner on the extracted raw text."""
+        if not text or len(text) < 100:
+             if is_last_resort:
+                 return text, None # Return whatever we have
+             return None # Keep trying
+        
+        cleaned = ContentCleaner.clean_text(text)
+        return cleaned, None
+
+    def _remove_noise_elements(self, soup):
+        """Remove navigation, header, footer, etc from soup in place."""
+        for element in soup.find_all(['nav', 'header', 'footer', 'aside']):
+            element.decompose()
+        
+        for selector in ['.navigation', '.nav', '.menu', '.header', '.footer', 
+                        '.sidebar', '.widget', '#header', '#footer', '#nav',
+                        '[role="navigation"]', '[role="banner"]', '[role="complementary"]']:
+            for element in soup.select(selector):
+                element.decompose()
+
+    def _try_json_ld(self, soup):
+        json_ld_tags = soup.find_all("script", type="application/ld+json")
+        for tag in json_ld_tags:
+            try:
+                data = json.loads(tag.text)
+                data_list = data if isinstance(data, list) else [data]
+                for item in data_list:
+                    if isinstance(item, dict) and "articleBody" in item:
+                        return item["articleBody"]
+            except:
+                continue
+        return None
+
+    def _try_generic_selectors(self, soup):
+        selectors = [
+            "[itemprop='articleBody']", "article", ".article-content", ".post-content",
+            ".entry-content", ".post-body", ".blog-post-content", ".content",
+            "#content", "main article", "main", "div[class*='post']",
+            "div[class*='article']"
+        ]
+        for selector in selectors:
+            tags = soup.select(selector)
+            if tags:
+                for tag in tags:
+                    for noise in tag.find_all(['script', 'style', 'iframe', 'noscript']):
+                        noise.decompose()
+                    text = tag.get_text(separator="\n", strip=True)
+                    if len(text) > 300:
+                        return text
+        return None
+
+    def _try_aggressive_div_search(self, soup):
+        all_divs = soup.find_all('div')
+        best_div, best_length = None, 0
+        for div in all_divs:
+            paragraphs = div.find_all('p', recursive=False)
+            if paragraphs:
+                text = "\n\n".join([p.get_text(strip=True) for p in paragraphs])
+                if len(text) > best_length:
+                    best_length = len(text)
+                    best_div = div
+        
+        if best_div and best_length > 300:
+            for noise in best_div.find_all(['script', 'style', 'iframe', 'noscript']):
+                noise.decompose()
+            return best_div.get_text(separator="\n", strip=True)
+        return None
+
+    def _try_paragraph_fallback(self, soup):
+        main_content = soup.find('main') or soup.find('article') or soup.find('body') or soup
+        if main_content:
+            paragraphs = main_content.find_all("p")
+            if paragraphs:
+                valid = [p.get_text(strip=True) for p in paragraphs if len(p.get_text(strip=True)) > 30]
+                combined = "\n\n".join(valid)
+                if len(combined) > 200:
+                    return combined
+        return None
+
+
+class RawTextExtractor(BaseExtractor):
+    """Passthrough for raw text input"""
+    def extract(self, source: str) -> tuple[str | None, str | None]:
+        logger.info("Processing as raw text")
+        return source.strip(), None
+
+
+# ---------------------------------------------------------------
+# FACADE CLASS (Backward Compatibility Maintained)
+# ---------------------------------------------------------------
+
+class ContentExtractor:
+    """
+    Facade for the extraction subsystem.
+    Routes requests to the appropriate extractor.
+    """
+    
     @staticmethod
     def extract_content(input_text, input_type):
         """
@@ -406,39 +441,20 @@ class ContentExtractor:
             input_type: 'blog', 'youtube', 'text'
         """
         logger.info(f"=" * 80)
-        logger.info(f"EXTRACT CONTENT CALLED")
+        logger.info(f"EXTRACT CONTENT CALLED (Strategy Pattern)")
         logger.info(f"Type: {input_type}")
-        logger.info(f"Input: {input_text[:100]}..." if len(input_text) > 100 else f"Input: {input_text}")
         logger.info(f"=" * 80)
-        
-        if input_type == "text":
-            logger.info("Processing as raw text")
-            return input_text.strip(), None
 
-        elif input_type == "youtube":
-            logger.info("Processing as YouTube URL")
-            return ContentExtractor.get_youtube_transcript(input_text)
+        extractor: BaseExtractor
 
+        if input_type == "youtube":
+            extractor = YouTubeExtractor()
         elif input_type == "blog":
-            logger.info("Processing as blog URL")
-            raw, err = ContentExtractor.scrape_blog_post(input_text)
+            extractor = BlogExtractor()
+        elif input_type == "text":
+            extractor = RawTextExtractor()
+        else:
+            logger.error(f"Invalid input type: {input_type}")
+            return None, "Invalid input type"
 
-            if err:
-                logger.error(f"Blog extraction failed: {err}")
-                return None, err
-            
-            cleaned = ContentExtractor.clean_text(raw)
-            logger.info("=" * 80)
-            logger.info("EXTRACTION COMPLETE")
-            logger.info(f"Final content length: {len(cleaned)} characters")
-            logger.info("=" * 80)
-            print("\n" + "=" * 80)
-            print("PREVIEW OF EXTRACTED CONTENT:")
-            print("=" * 80)
-            print(cleaned)
-            print("=" * 80 + "\n")
-            
-            return cleaned, None
-
-        logger.error(f"Invalid input type: {input_type}")
-        return None, "Invalid input type"
+        return extractor.extract(input_text)
