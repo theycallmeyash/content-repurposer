@@ -27,7 +27,7 @@ col1, col2, col3 = st.columns([1, 1, 1])
 
 with col2:
     if st.button("✨ Enter Prism Studio", type="primary", use_container_width=True):
-        st.switch_page("pages/1_💎_Prism_Studio.py")
+        st.switch_page("pages/prism_studio.py")
 
     st.markdown("""
     <div style="text-align: center; margin-top: 2rem; color: #666;">

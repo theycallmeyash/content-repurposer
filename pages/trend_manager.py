@@ -110,10 +110,13 @@ with tab_deep_dive:
                 if error:
                     st.error(error)
                 else:
+                    # DEBUG: Trace analysis data
+                    print(f"DEBUG: Deep Dive Analysis for '{analyze_query}': {json.dumps(analysis, default=str)[:500]}...")
+                    
                     # Display metrics
                     m1, m2, m3, m4 = st.columns(4)
                     m1.metric("Total Engagement", f"{analysis['total_engagement']:,}")
-                    m2.metric("Avg Likes", list(analysis.values())[3] if len(analysis) > 3 else "0") # rough fix for dict access
+                    m2.metric("Avg Likes", analysis.get('avg_likes', 0))
                     m3.metric("Verified Users", f"{analysis['verified_percentage']}%")
                     m4.metric("Tweet Count", analysis['tweet_count'])
                     
@@ -156,6 +159,7 @@ with tab_viral:
                 elif not viral_tweets:
                     st.warning("No viral tweets found matching these strict criteria. Try lowering the min likes.")
                 else:
+                    print(f"DEBUG: Viral Content: Found {len(viral_tweets)} tweets for '{niche_query}'")
                     st.success(f"Found {len(viral_tweets)} viral tweets!")
                     
                     for t in viral_tweets:
@@ -410,6 +414,7 @@ with tab5:
                 if error:
                     st.error(error)
                 else:
+                    print(f"DEBUG: Found {len(trends)} trends. Sample: {trends[:3]}") # Debug trace
                     st.success(f"✅ Found {len(trends)} trends")
                     
                     # Add to main cache automatically
@@ -441,10 +446,11 @@ with tab5:
                  if error:
                      st.error(error)
                  else:
+                     print(f"DEBUG: Search Results: {len(tweets)} tweets found.")
                      for t in tweets:
                          st.markdown(f"""
                          <div style="padding: 10px; border: 1px solid #333; border-radius: 5px; margin-bottom: 10px;">
-                            <small>{t['user']} (@{t['screen_name']})</small><br>
+                            <small>{t['user']['name']} (@{t['screen_name']})</small><br>
                             {t['text']}<br>
                             <small>❤️ {t['favorite_count']} | 🔁 {t['retweet_count']}</small>
                          </div>

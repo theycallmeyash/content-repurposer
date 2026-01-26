@@ -30,7 +30,6 @@ class LinkedInTrendFetcher:
     def __init__(self, api_provider: str = "official"):
         """
         Initialize the LinkedIn trend fetcher.
-        
         :param api_provider: API provider to use ('official', 'rapidapi', 'apify')
         """
         self.api_provider = api_provider
