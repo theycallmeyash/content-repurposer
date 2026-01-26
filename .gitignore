@@ -28,3 +28,8 @@ Thumbs.db
 # Logs
 *.log
 last_scraped.html
+
+# Project Data
+twitter_cookies.json
+twitter_cache/
+real_trends.json
