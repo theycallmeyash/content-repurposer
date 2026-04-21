@@ -1,35 +1,34 @@
-# 💎 Prism | AI Content Repurposer
+# 💎 Prism | Sovereign AI Content Repurposer
 
-> **Refract your best work.**
-> Transform deep-dive content (Blogs, Videos) into infinite social assets using AI.
+> **Refract your best work. Locally.**
+> Transform deep-dive content (Blogs, Videos) into infinite social assets using private, local AI.
 
-Prism is a **Creator Studio** that takes your "Core Asset" (a long-form blog post or YouTube video) and intelligently repurposes it for Twitter, LinkedIn, and Instagram.
+Prism is a **Sovereign Creator Studio** that takes your "Core Asset" (a long-form blog post or YouTube video) and intelligently repurposes it for Twitter, LinkedIn, and Instagram. Unlike generic AI tools, Prism runs entirely on your hardware, preserving your privacy and your unique brand voice.
 
-## 🚀 Features (MVP)
-- **Multi-Source Input**: Accepts YouTube URLs, Blog URLs, or Raw Text.
-- **Intelligent Extraction**: Automatically scrapes and cleans content.
-- **Platform Optimization**:
-    - 🐦 **Twitter Threads**: Punchy, threaded tweets under 280 chars.
-    - 💼 **LinkedIn**: Professional, engagement-focused posts.
-    - 📸 **Instagram**: Visual captions with hashtag optimization.
-- **Glassmorphic UI**: A premium, distraction-free workspace.
-- **Free Tier**: Optimized for Gemini Free API (no credit card needed).
+## 🚀 Key Achievements: The "Sovereign AI" Shift
 
-## 🆕 New Updates
-### 📈 Trend Manager & Engine
-A powerful new engine to fetch real-time trending topics to inspire your content creation.
-- **Multi-Source Intelligence**: Fetches trends from **X (Twitter)**, **LinkedIn** (via API or Apify), and **Reddit**.
-- **X.com Scraper 2.0**:
-    - **Manual Cookie Import**: Bypass Cloudflare blocks and 403 errors by safely importing browser cookies.
-    - **Standalone HTTP/2 Client**: Robust fetching mechanism that mimics a real browser.
-    - **Local Caching**: Saves trends locally to minimize API calls and avoid rate limits.
-- **Unified Dashboard**: View, filter, and manage trends from all sources in one glassmorphic interface.
+This week, we successfully transitioned from cloud-dependent APIs to a fully local, high-performance content engine. 
 
-### 💎 Prism Studio Refactor
-- **Architecture**: Split into a robust Multi-Page App (Home, Studio, Trend Manager, Settings).
-- **Visuals**: Enhanced "Glassmorphism" UI with dynamic gradients, floating animations, and a customized component system.
+### 🧠 The 3-Stream Architecture
+The core engine now balances three distinct influences to ensure every post is factual, authentic, and timely:
 
-## 🛠️ Setup & Installation
+1.  **Content Stream**: Strips the raw factual "meat" from your video transcripts and long-form blogs using local Llama 3.1.
+2.  **Soul Stream (Brand Identity)**: Uses **Local RAG** to analyze your past content. It builds a vector database of *your* voice, injecting your personality into every output.
+3.  **Trend Stream**: (In-Progress) Real-time platform signals and "virality" hooks to ensure your content hits the right discoverability notes.
+
+### 🛡️ Privacy & Performance
+-   **Local LLM Core**: Powered by **Llama 3.1 (8B)** via Ollama. No data leaves your machine.
+-   **Local Embeddings**: High-speed retrieval using `sentence-transformers` (all-MiniLM-L6-v2).
+-   **Zero API Costs**: No per-post fees or subscription taxes.
+
+## 🛠️ Tech Stack
+-   **Orchestration**: Python, Streamlit
+-   **Models**: Llama 3.1 (8B) via Ollama
+-   **Embeddings**: Sentence Transformers
+-   **Vector Store**: Local FAISS / Chroma
+-   **UI**: Premium Glassmorphic Design
+
+## ⚙️ Setup & Installation
 
 1. **Clone the repository**
    ```bash
@@ -42,38 +41,29 @@ A powerful new engine to fetch real-time trending topics to inspire your content
    pip install -r requirements.txt
    ```
 
-3. **Run the application**
+3. **Install Ollama**
+   Download and install [Ollama](https://ollama.com/), then pull the required model:
+   ```bash
+   ollama pull llama3.1
+   ```
+
+4. **Run the application**
    ```bash
    streamlit run app.py
    ```
 
-4. **Configure API Keys**
-   - Copy `.env.example` to `.env`
-   - Add your API keys (Gemini, LinkedIn, etc.)
-
-5. **Twitter/X Scraper Setup (Crucial)**
-   To enable Twitter trend fetching, you must import your browser cookies to avoid bot detection:
-   1. Install the **[Cookie-Editor](https://cookie-editor.com/)** browser extension.
-   2. Log in to `x.com` in your browser.
-   3. Open the extension -> Click **Export** -> **Export as JSON**.
-   4. Go to the **Trend Manager** page in Prism.
-   5. Select the **🐦 X Scraper** tab -> **Manual Cookies**.
-   6. Paste the JSON and click **Import**.
-   *Note: This creates a `twitter_cookies.json` file locally. Do not share this file.*
-
 ## 🗺️ Roadmap
 
-### Phase 1: The Core (Completed)
-- [x] **Rebranding**: Transition to "Prism" identity.
-- [x] **Architecture**: Split into Multi-Page App.
-- [x] **Trend Engine**: Real-time fetching from X and LinkedIn.
-- [ ] **Smart Previews**: Visual mockups (Twitter Card / LinkedIn UI).
+### Phase 1: The Foundation (Completed)
+- [x] **Local AI Migration**: Replaced Gemini/Cloud APIs with local models.
+- [x] **3-Stream Architecture**: Implementation of Content and Soul streams.
+- [x] **Brand Voice Discovery**: Distill identity from past posts via local RAG.
 
 ### Phase 2: Advanced Studio (Upcoming)
-- [ ] **Black Box Decryptor**: Interactive logs and security visualization.
-- [ ] **Voice Engine**: Analyze previous posts to create a custom "Brand Voice" profile.
-- [ ] **Visual Studio**: Integrated AI image generation.
-- [ ] **Scheduler Integration**: One-click scheduling.
+- [ ] **Trend Intelligence**: Connecting live scrapers to the Trend Stream.
+- [ ] **Balance Sliders**: Granular control over Content vs. Soul vs. Trend weights.
+- [ ] **Visual Studio**: Integrated local image generation for social assets.
 
 ## 📄 License
-MIT License. Built with ❤️ using Streamlit & AI.
+MIT License. Built with ❤️ for the Sovereign Creator.
+

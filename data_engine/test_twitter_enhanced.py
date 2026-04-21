@@ -9,7 +9,7 @@ import os
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from twitter_scraper_advanced import TwitterScraperAdvanced
+from service.twitter import TwitterScraperAdvanced, TwitterTrendAnalyzer, TwitterProfileAnalyzer
 import json
 
 
@@ -86,12 +86,12 @@ def test_hashtag_analysis():
     """Test hashtag performance analysis"""
     print_section("Testing Hashtag Analysis")
     
-    scraper = TwitterScraperAdvanced()
+    analyzer = TwitterTrendAnalyzer()
     
     hashtag = "#AI"
     print(f"Analyzing hashtag: {hashtag}")
     
-    analysis, error = scraper.analyze_hashtag_performance(hashtag, limit=30)
+    analysis, error = analyzer.analyze_hashtag_performance(hashtag, limit=30)
     
     if error:
         print(f"❌ Error: {error}")
@@ -119,11 +119,11 @@ def test_viral_content():
     """Test viral content detection"""
     print_section("Testing Viral Content Detection")
     
-    scraper = TwitterScraperAdvanced()
+    analyzer = TwitterTrendAnalyzer()
     
     print("Finding viral tweets (min 5000 engagement)...")
     
-    viral_tweets, error = scraper.find_viral_content(
+    viral_tweets, error = analyzer.find_viral_content(
         query="",
         min_engagement=5000,
         limit=5
@@ -148,12 +148,12 @@ def test_user_analysis():
     """Test user pattern analysis"""
     print_section("Testing User Pattern Analysis")
     
-    scraper = TwitterScraperAdvanced()
+    analyzer = TwitterProfileAnalyzer()
     
     username = "elonmusk"  # Example - change to any public account
     print(f"Analyzing user: @{username}")
     
-    analysis, error = scraper.analyze_user_patterns(username, tweet_limit=50)
+    analysis, error = analyzer.analyze_user_patterns(username, tweet_limit=50)
     
     if error:
         print(f"❌ Error: {error}")

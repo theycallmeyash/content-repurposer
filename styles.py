@@ -12,6 +12,25 @@ def apply_custom_css():
             font-family: 'Inter', sans-serif;
         }
 
+        /* Animations */
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+        
+        @keyframes slideUp {
+            from { transform: translateY(20px); opacity: 0; }
+            to { transform: translateY(0); opacity: 1; }
+        }
+
+        .animate-fade-in {
+            animation: fadeIn 0.8s ease-in-out;
+        }
+
+        .animate-slide-up {
+            animation: slideUp 0.6s ease-out;
+        }
+        
         .block-container {
             padding-top: 2rem;
             max-width: 1200px;
@@ -59,11 +78,18 @@ def apply_custom_css():
         }
         
         .subtitle-text {
-            font-size: 0.9rem;
-            color: #8b9bb4;
+            font-size: 1.1rem;
+            color: #94A3B8;
             display: block;
-            margin-top: 0.2rem;
+            margin-top: 1rem;
             font-weight: 400;
+            line-height: 1.6;
+        }
+        
+        .hero-section {
+            text-align: center;
+            padding: 4rem 1rem;
+            animation: fadeIn 1s ease-in;
         }
 
         /* Journey Stepper */
@@ -154,6 +180,69 @@ def apply_custom_css():
             color: #64748b;
             text-transform: uppercase;
         }
+
+        /* Feature Card (Main Page) */
+        .feature-card {
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: 16px;
+            padding: 1.5rem;
+            transition: all 0.3s ease;
+            height: 100%;
+        }
+
+        .feature-card:hover {
+            border-color: rgba(255, 255, 255, 0.2);
+            background: rgba(255, 255, 255, 0.05);
+            transform: translateY(-5px);
+        }
+
+        .feature-icon {
+            font-size: 2rem;
+            margin-bottom: 1rem;
+            background: linear-gradient(135deg, #00C6FF 0%, #0072FF 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .feature-title {
+            font-size: 1.1rem;
+            font-weight: 700;
+            color: #fff;
+            margin-bottom: 0.5rem;
+        }
+
+        .feature-desc {
+            font-size: 0.9rem;
+            color: #94A3B8;
+            line-height: 1.6;
+        }
+
+        /* Trend Card */
+        .trend-card {
+            background: rgba(30, 41, 59, 0.5);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: 12px;
+            padding: 1rem;
+            margin-bottom: 1rem;
+            display: flex; /* keep as flex effectively */
+            flex-direction: column;
+        }
+        
+        .trend-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.5rem;
+        }
+
+        .trend-keyword {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: #E2E8F0;
+        }
+
+        .trend-meta { ... }
 
         /* Custom Alert/Warning Box */
         .custom-warning {
@@ -259,7 +348,97 @@ def apply_custom_css():
             border-bottom: 2px solid #00C6FF;
         }
 
+        /* LinkedIn Card Styling */
+        .linkedin-card {
+            background: #1E293B;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            padding: 0;
+            margin-bottom: 1rem;
+            color: #E2E8F0;
+            font-family: -apple-system, system-ui, BlinkMacSystemFont, "Segoe UI", Roboto;
+            max-width: 600px;
+        }
+
+        .linkedin-header {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 12px 16px;
+        }
+
+        .linkedin-avatar {
+            width: 48px;
+            height: 48px;
+            background: linear-gradient(135deg, #00C6FF 0%, #0072FF 100%);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 20px;
+            color: white;
+            font-weight: bold;
+        }
+
+        .linkedin-info {
+            display: flex;
+            flex-direction: column;
+            line-height: 1.3;
+        }
+
+        .linkedin-name {
+            font-weight: 600;
+            font-size: 14px;
+            color: #fff;
+        }
+
+        .linkedin-desc {
+            font-size: 12px;
+            color: #94A3B8;
+        }
+
+        .linkedin-time {
+            font-size: 12px;
+            color: #94A3B8;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .linkedin-body {
+            padding: 4px 16px 16px 16px;
+            font-size: 14px;
+            line-height: 1.5;
+            color: #E2E8F0;
+            white-space: pre-wrap;
+        }
         
-    </style>
+        .linkedin-footer {
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+            padding: 4px 8px;
+            display: flex;
+            justify-content: space-between;
+        }
+
+        .linkedin-action-btn {
+            background: transparent;
+            border: none;
+            color: #94A3B8;
+            padding: 10px 8px;
+            border-radius: 4px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            transition: background 0.2s;
+        }
+
+        .linkedin-action-btn:hover {
+            background: rgba(255, 255, 255, 0.05);
+            color: #E2E8F0;
+        }
+
     
     """, unsafe_allow_html=True)

@@ -1,15 +1,15 @@
-from data_engine.twitter_scraper_advanced import TwitterScraperAdvanced
+from service.twitter import TwitterTrendAnalyzer
 import logging
 
 logging.basicConfig(level=logging.INFO)
 
 def test_enhanced_capabilities():
-    scraper = TwitterScraperAdvanced()
+    analyzer = TwitterTrendAnalyzer()
     
     print("\n--- Testing Viral Content Finder ---")
     # Using a broad query that should find results easily
     try:
-        viral, error = scraper.find_viral_content("python", min_engagement=10, limit=5)
+        viral, error = analyzer.find_viral_content("python", min_engagement=10, limit=5)
         if error:
             print(f"Error: {error}")
         else:
@@ -19,7 +19,7 @@ def test_enhanced_capabilities():
 
     print("\n--- Testing Hashtag Analysis ---")
     try:
-        analysis, error = scraper.analyze_hashtag_performance("AI", limit=5)
+        analysis, error = analyzer.analyze_hashtag_performance("AI", limit=5)
         if error:
             print(f"Error: {error}")
         else:

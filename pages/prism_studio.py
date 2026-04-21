@@ -8,6 +8,10 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from styles import apply_custom_css
 from content_extractor import ContentExtractor
 from content_repurposer import ContentRepurposer
+from brand_profile_engine import BrandProfileEngine
+from data_engine.trend_scraper_v2 import TrendScraperV2
+from data_engine.brand_collector import BrandDataCollector
+from models import BrandSoul, TrendContext
 
 st.set_page_config(
     page_title="Prism Studio",
@@ -24,7 +28,10 @@ def init_session_state():
         'api_key': '',
         'extracted_content': None,
         'results': None,
-        'processing': False
+        'processing': False,
+        'brand_soul': None,
+        'selected_trends': [],
+        'trend_source': 'twitter'
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -92,9 +99,83 @@ if not st.session_state.get('api_key'):
     col_warn1, col_warn2, col_warn3 = st.columns([1, 2, 1])
     with col_warn2:
         if st.button("⚙️ Configure API Settings", type="primary", use_container_width=True):
-            st.switch_page("pages/2_⚙️_Settings.py")
+            st.switch_page("pages/settings.py")
     st.stop()
 
+
+# ============ SIDEBAR: BRAND SOUL & TRENDS ============
+with st.sidebar:
+    st.markdown("### 🎭 Brand Soul (Identity)")
+    with st.expander("Distill My Soul", expanded=not st.session_state.brand_soul):
+        brand_name = st.text_input("Brand Name", value="MyBrand")
+        distill_method = st.radio("Distill from", ["Paste Posts", "Upload LinkedIn CSV"])
+        
+        if distill_method == "Paste Posts":
+            corpus_text = st.text_area("Paste 5-10 recent posts", height=150, help="Newline separated")
+            if st.button("✨ Distill Soul", use_container_width=True):
+                if corpus_text:
+                    with st.spinner("Distilling..."):
+                        engine = BrandProfileEngine()
+                        posts = [p.strip() for p in corpus_text.split("\n") if len(p.strip()) > 10]
+                        st.session_state.brand_soul = engine.distill_soul(posts)
+                        # Also add to vector store for RAG
+                        repurposer = ContentRepurposer(api_key=st.session_state.api_key)
+                        repurposer.vector_store.add_posts([{"id": f"manual_{i}", "content": p} for i, p in enumerate(posts)])
+                        st.success("Soul Refined!")
+                else:
+                    st.error("Paste some posts first!")
+        else:
+            uploaded_file = st.file_uploader("Upload 'Shares.csv' from LinkedIn", type="csv")
+            if uploaded_file:
+                if st.button("🚀 Process CSV", use_container_width=True):
+                    # Save temporarily
+                    with open("temp_linkedin.csv", "wb") as f:
+                        f.write(uploaded_file.getbuffer())
+                    
+                    collector = BrandDataCollector(brand_name)
+                    collector.ingest_linkedin_csv("temp_linkedin.csv")
+                    posts = collector.get_clean_corpus()
+                    
+                    with st.spinner("Analyzing style..."):
+                        engine = BrandProfileEngine(api_key=st.session_state.api_key)
+                        st.session_state.brand_soul = engine.distill_soul(posts)
+                        # Add to vector store
+                        repurposer = ContentRepurposer(api_key=st.session_state.api_key)
+                        repurposer.vector_store.add_posts([{"id": f"li_{i}", "content": p} for i, p in enumerate(posts)])
+                    
+                    os.remove("temp_linkedin.csv")
+                    st.success(f"Processed {len(posts)} posts!")
+
+    if st.session_state.brand_soul:
+        soul = st.session_state.brand_soul
+        st.markdown(f"""
+        <div style="background: rgba(102, 126, 234, 0.1); border-radius: 10px; padding: 10px; border: 1px solid #667eea;">
+            <p><b>Tone:</b> {soul.tone}</p>
+            <p><b>Domain:</b> {soul.domain}</p>
+        </div>
+        """, unsafe_allow_html=True)
+        if st.button("🗑️ Reset Soul"):
+            st.session_state.brand_soul = None
+            st.rerun()
+
+    st.markdown("---")
+    st.markdown("### 📈 Viral Trends (The Spice)")
+    trend_scraper = TrendScraperV2()
+    
+    if st.button("🔄 Sync Trends", use_container_width=True):
+        with st.spinner("Fetching trends..."):
+            trend_scraper.get_reddit_trends() # Supplementary Reddit trends
+            st.rerun()
+            
+    all_trends = trend_scraper.get_all_trends()
+    trend_options = [f"{t['keyword']} ({t['source']})" for t in all_trends]
+    
+    st.session_state.selected_trends = st.multiselect(
+        "Inject Trends",
+        options=trend_options,
+        default=[],
+        help="Select keywords to weave into your content."
+    )
 
 # ============ MAIN CONTENT AREA ============
 col1, col2 = st.columns([1, 1])
@@ -196,8 +277,22 @@ with col2:
                             provider=st.session_state.provider, 
                             api_key=st.session_state.api_key
                         )
-                        results = repurposer.repurpose_content(content)
+                        
+                        # Prepare Trend Context
+                        trends_ctx = None
+                        if st.session_state.selected_trends:
+                            # Strip source from selected strings: "Trend (Source)" -> "Trend"
+                            clean_keywords = [t.split(" (")[0] for t in st.session_state.selected_trends]
+                            trends_ctx = TrendContext(keywords=clean_keywords, platform="multiple")
+                        
+                        results = repurposer.repurpose_content(
+                            content, 
+                            brand_soul=st.session_state.brand_soul,
+                            trends=trends_ctx
+                        )
                         st.session_state.results = results
+                        # Initialize editable content buffers
+                        st.session_state.li_content = results.get('linkedin_post', '')
                         st.balloons()
                     except Exception as e:
                         st.error(f"Error: {str(e)}")
@@ -216,7 +311,48 @@ with col2:
                 st.text_area(f"Tweet {i+1}", value=tweet, height=100)
         
         with tab2:
-            st.text_area("LinkedIn", value=results.get('linkedin_post', ''), height=300)
+            col_li_edit, col_li_prev = st.columns([1, 1])
+            
+            with col_li_edit:
+                st.markdown("##### ✍️ Editor")
+                # Ensure state exists
+                if 'li_content' not in st.session_state:
+                    st.session_state.li_content = results.get('linkedin_post', '')
+                    
+                st.text_area(
+                    "LinkedIn Post", 
+                    key="li_content", 
+                    height=500,
+                    label_visibility="collapsed"
+                )
+            
+            with col_li_prev:
+                st.markdown("##### 👁️ Preview")
+                li_text = st.session_state.get('li_content', '')
+                
+                # Render Realistic Card
+                st.markdown(f"""
+                <div class="linkedin-card">
+                    <div class="linkedin-header">
+                        <div class="linkedin-avatar">P</div>
+                        <div class="linkedin-info">
+                            <div class="linkedin-name">Prism User</div>
+                            <div class="linkedin-desc">Content Creator • 1d • <span style="font-size: 10px;">🌐</span></div>
+                        </div>
+                        <div style="margin-left: auto; color: #94A3B8;">•••</div>
+                    </div>
+                    <div class="linkedin-body">{li_text}</div>
+                    <div style="padding: 0 16px; color: #94A3B8; font-size: 12px; margin-bottom: 8px;">
+                        👍 88 • 4 comments
+                    </div>
+                    <div class="linkedin-footer">
+                        <button class="linkedin-action-btn">👍 Like</button>
+                        <button class="linkedin-action-btn">💬 Comment</button>
+                        <button class="linkedin-action-btn">🔁 Repost</button>
+                        <button class="linkedin-action-btn">🚀 Send</button>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
             
         with tab3:
             st.text_area("Instagram", value=results.get('instagram_caption', ''), height=200)

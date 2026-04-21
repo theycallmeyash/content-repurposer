@@ -5,7 +5,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from data_engine.trend_scraper_v2 import TrendScraperV2
 from data_engine.linkedin_trend_fetcher import LinkedInTrendFetcher
-from data_engine.twitter_scraper_advanced import TwitterScraperAdvanced
+from service.twitter import TwitterScraperAdvanced, TwitterTrendAnalyzer
 import json
 import pandas as pd
 import time
@@ -23,8 +23,24 @@ if 'twitter_scraper' not in st.session_state:
     # Upgrade to Advanced Scraper
     st.session_state.twitter_scraper = TwitterScraperAdvanced()
 
-st.title("📈 Trend Manager")
-st.markdown("Manually input trending topics from Twitter/LinkedIn or fetch from Reddit")
+if 'twitter_trend_analyzer' not in st.session_state:
+    st.session_state.twitter_trend_analyzer = TwitterTrendAnalyzer(st.session_state.twitter_scraper)
+
+st.markdown('<div class="animate-fade-in">', unsafe_allow_html=True)
+
+# Custom Header
+st.markdown("""
+<div class="glass-header">
+    <div class="header-content">
+        <div class="header-icon">📈</div>
+        <div>
+            <h1 class="gradient-text">TREND NETWORK</h1>
+            <span class="subtitle-text">Pulse of the internet. Real-time signal detection.</span>
+        </div>
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
 
 # Tabs
 tab1, tab2, tab_deep_dive, tab_viral, tab_dataset, tab3, tab4, tab5 = st.tabs([
@@ -55,11 +71,11 @@ with tab1:
         height=200
     )
     
-    if st.button("💾 Save Trends", type="primary"):
+    if st.button("Save Trends", type="primary"):
         if trends_input.strip():
             trends_list = [t.strip() for t in trends_input.split('\n') if t.strip()]
             st.session_state.scraper.add_manual_trends(trends_list, source=source)
-            st.success(f"✅ Added {len(trends_list)} trends from {source}")
+            st.success(f"Added {len(trends_list)} trends from {source}")
         else:
             st.warning("Please enter at least one trend")
 
@@ -79,9 +95,19 @@ with tab2:
         
         # Display by source
         for source, trends in sources.items():
-            with st.expander(f"**{source.upper()}** ({len(trends)} trends)", expanded=True):
-                for t in trends:
-                    st.markdown(f"- {t['keyword']}")
+            st.markdown(f"### {source.upper()}")
+            for t in trends:
+                st.markdown(f"""
+                <div class="trend-card animate-slide-up">
+                    <div class="trend-header">
+                        <span class="trend-keyword">{t['keyword']}</span>
+                        <span style="font-size: 0.8rem; color: #64748b;">{t.get('timestamp', 'Just now')}</span>
+                    </div>
+                    <div class="trend-meta" style="font-size: 0.9rem; color: #94A3B8;">
+                        Engagement: {t.get('engagement', 'N/A')}
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
         
         # Clear button
         if st.button("🗑️ Clear All Trends", type="secondary"):
@@ -103,7 +129,7 @@ with tab_deep_dive:
     if st.button("🔎 Analyze Trend"):
         if analyze_query:
             with st.spinner(f"analyzing {analyze_query}..."):
-                analysis, error = st.session_state.twitter_scraper.analyze_hashtag_performance(
+                analysis, error = st.session_state.twitter_trend_analyzer.analyze_hashtag_performance(
                     analyze_query, limit=analyze_limit
                 )
                 
@@ -148,7 +174,7 @@ with tab_viral:
         
         if submitted and niche_query:
             with st.spinner(f"scouring for viral content in '{niche_query}'..."):
-                viral_tweets, error = st.session_state.twitter_scraper.find_viral_content(
+                viral_tweets, error = st.session_state.twitter_trend_analyzer.find_viral_content(
                     query=niche_query,
                     min_engagement=min_likes,
                     limit=20
@@ -243,11 +269,18 @@ with tab3:
             reddit_trends = st.session_state.scraper.get_reddit_trends(subreddits=subreddits, limit=limit)
             
             if reddit_trends:
-                st.success(f"✅ Fetched {len(reddit_trends)} trends from Reddit")
+                st.success(f"Fetched {len(reddit_trends)} trends from Reddit")
                 for t in reddit_trends[:10]:
-                    st.markdown(f"- **{t['keyword']}** (r/{t.get('subreddit', 'unknown')})")
+                    st.markdown(f"""
+                    <div class="trend-card animate-slide-up">
+                        <div class="trend-header">
+                            <span class="trend-keyword">{t['keyword']}</span>
+                            <span style="font-size: 0.8rem; color: #F97316;">r/{t.get('subreddit', 'unknown')}</span>
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
             else:
-                st.warning("⚠️ Reddit API not configured. Using mock data. See README for setup instructions.")
+                st.warning("Reddit API not configured. Using mock data.")
 
 with tab4:
     st.subheader("Fetch from LinkedIn")
@@ -471,3 +504,5 @@ with st.sidebar:
     
     if st.session_state.scraper.trends_cache.get('last_updated'):
         st.caption(f"Last updated: {st.session_state.scraper.trends_cache['last_updated'][:19]}")
+
+st.markdown('</div>', unsafe_allow_html=True) # Close fade-in div

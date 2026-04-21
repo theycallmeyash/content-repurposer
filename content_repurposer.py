@@ -5,15 +5,16 @@ import os
 import re
 import time
 import json
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from collections import deque
 from dataclasses import dataclass
 import logging
 from datetime import datetime
 
 # New imports for architecture refactor
-from models import RepurposedContent
+from models import RepurposedContent, BrandSoul, TrendContext
 from prompts import REPURPOSE_PROMPT_TEMPLATE, SYSTEM_PROMPT_DEFAULT
+from vector_store import BrandVectorStore
 
 logging.basicConfig(
     level=logging.INFO,
@@ -198,6 +199,9 @@ class ContentRepurposer:
             max_tokens_per_minute=self.tier_config.tokens_per_minute
         )
         
+        # Initialize RAG store
+        self.vector_store = BrandVectorStore()
+        
         self._validate_and_init_client()
     
     def _validate_and_init_client(self):
@@ -230,17 +234,42 @@ class ContentRepurposer:
         mid_point = max_chars // 2
         return content[:mid_point] + "\n...[TRUNCATED]...\n" + content[-mid_point:]
     
-    def _call_llm_structured(self, content: str) -> Dict[str, Any]:
+    def _call_llm_structured(
+        self, 
+        content: str, 
+        brand_soul: Optional[BrandSoul] = None,
+        trends: Optional[TrendContext] = None
+    ) -> Dict[str, Any]:
         """Generate structured content using robust prompting and JSON validation"""
         
-        # 1. Prepare Prompt
+        # 1. Fetch Style Examples from RAG
+        style_examples = ""
+        if brand_soul:
+            # Search using both content and brand soul keywords for better RAG relevance
+            query = f"{content[:200]} {' '.join(brand_soul.vocabulary[:5])}"
+            examples = self.vector_store.search_style_examples(query)
+            if examples:
+                style_examples = "\n".join([f"- {ex}" for ex in examples])
+        
+        # 2. Prepare Template Variables
+        soul_str = "Default Professional Persona"
+        if brand_soul:
+            soul_str = f"Tone: {brand_soul.tone}\nDomain: {brand_soul.domain}\nVocabulary: {', '.join(brand_soul.vocabulary)}\nGuidelines: {'; '.join(brand_soul.style_guidelines)}"
+            
+        trend_str = "No specific trends provided. Focus on organic reach."
+        if trends:
+            trend_str = f"Platform: {trends.platform}\nKeywords: {', '.join(trends.keywords)}"
+            
+        # 3. Prepare Prompt
         prompt = REPURPOSE_PROMPT_TEMPLATE.format(
             content=content, 
+            brand_soul=soul_str,
+            trends=trend_str,
+            style_examples=style_examples or "No past examples found. Follow the tone guidelines.",
             tier_config_name=self.tier_config.name
         )
         
-        # 2. Append JSON Schema enforcement
-        # For simplicity across providers, we inject the schema into the prompt key
+        # 4. Append JSON Schema enforcement
         schema_instruction = f"\n\nIMPORTANT: You must response with valid JSON that matches this schema:\n{RepurposedContent.model_json_schema()}"
         full_prompt = SYSTEM_PROMPT_DEFAULT + "\n\n" + prompt + schema_instruction
         
@@ -303,12 +332,17 @@ class ContentRepurposer:
                 "tldr": "Error parsing response."
             }
 
-    def repurpose_content(self, content: str) -> Dict[str, Any]:
+    def repurpose_content(
+        self, 
+        content: str, 
+        brand_soul: Optional[BrandSoul] = None,
+        trends: Optional[TrendContext] = None
+    ) -> Dict[str, Any]:
         """Main pipeline"""
         content = self._truncate_content_intelligently(content)
         
         # Generate Structured Output
-        results = self._call_llm_structured(content)
+        results = self._call_llm_structured(content, brand_soul=brand_soul, trends=trends)
         
         # Transform for frontend compatibility (Frontend expects flat keys mostly)
         # Our model: {twitter_thread: {tweets: [...]}} -> Frontend wants: {twitter_thread: [...]}

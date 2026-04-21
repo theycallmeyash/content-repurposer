@@ -1,0 +1,276 @@
+import httpx
+import logging
+from typing import Dict, Any
+
+logger = logging.getLogger(__name__)
+
+class ContentLLMAnalyzer:
+    """
+    Service to analyze social media profile metrics using a local Ollama model.
+    """
+    def __init__(self, model_name="llama3.2", base_url="http://localhost:11434"):
+        self.model_name = model_name
+        self.base_url = base_url
+
+    def _get_safe_posting_hours(self, vi: dict, top_tweets: list) -> str:
+        """
+        Returns a human-readable posting time recommendation.
+        Falls back to inferring from tweet timestamps if best_posting_hour is 0 or missing.
+        """
+        hour = vi.get('best_posting_hour')
+
+        # Treat 0 as unreliable — midnight is almost never a true peak hour
+        if not hour or hour == 0:
+            # Try to infer from tweet created_at timestamps if available
+            hours_from_tweets = []
+            for t in top_tweets:
+                created_at = t.get('created_at', '')
+                if created_at:
+                    try:
+                        from datetime import datetime
+                        dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+                        hours_from_tweets.append(dt.hour)
+                    except Exception:
+                        pass
+
+            if hours_from_tweets:
+                from collections import Counter
+                most_common_hour = Counter(hours_from_tweets).most_common(1)[0][0]
+                return f"{most_common_hour}:00 (inferred from top tweet timestamps)"
+            else:
+                return "Unknown — check your data pipeline (best_posting_hour is returning 0)"
+
+        # Format valid hours into human-readable slots
+        if 5 <= hour < 12:
+            period = "Morning"
+        elif 12 <= hour < 17:
+            period = "Afternoon"
+        elif 17 <= hour < 21:
+            period = "Evening"
+        else:
+            period = "Night"
+
+        return f"{hour}:00 ({period})"
+
+    def _extract_topics(self, top_tweets: list) -> str:
+        """Extract recurring words/themes from tweet text to help the model write on-topic."""
+        all_text = " ".join([t.get('text', '') for t in top_tweets]).lower()
+        stopwords = {
+            'the','a','an','is','it','in','on','to','and','or','of','for',
+            'this','that','i','my','me','you','we','are','was','be','with',
+            'at','by','from','as','https','co','amp','rt','via','so','but',
+            'not','have','had','has','do','did','will','just','been','they'
+        }
+        words = [w.strip('.,!?#@"\'') for w in all_text.split()]
+        freq: Dict[str, int] = {}
+        for w in words:
+            if w and w not in stopwords and len(w) > 3:
+                freq[w] = freq.get(w, 0) + 1
+        top_topics = sorted(freq, key=freq.get, reverse=True)[:12]
+        return ", ".join(top_topics) if top_topics else "Not enough data"
+
+    def analyze_profile(self, profile_analysis: Dict[str, Any]) -> str:
+        """
+        Sends the profile analysis data to local Ollama Llama 3.2 to get actionable insights.
+        """
+        vi = profile_analysis.get('viral_insights', {})
+        top_tweets = profile_analysis.get("top_tweets", [])[:5]
+        bottom_tweets = profile_analysis.get("bottom_tweets", [])[:3]
+
+        # ── Derived context ──────────────────────────────────────────────
+        posting_time     = self._get_safe_posting_hours(vi, top_tweets)
+        recurring_topics = self._extract_topics(top_tweets)
+        best_format      = vi.get('best_content_type', 'text')
+
+        # ── Format tweet blocks ──────────────────────────────────────────
+        def fmt_tweets(tweets):
+            if not tweets:
+                return "  (Not available)"
+            return "\n".join(
+                f"  {i+1}. [{t.get('likes',0)} likes | {t.get('retweets',0)} RTs] "
+                f"(Format: {t.get('content_type','unknown')}) — \"{t.get('text','')[:180]}\""
+                for i, t in enumerate(tweets)
+            )
+
+        tweets_text     = fmt_tweets(top_tweets)
+        low_tweets_text = fmt_tweets(bottom_tweets)
+
+        # ── Prompt ───────────────────────────────────────────────────────
+        prompt = f"""You are a sharp, no-fluff Twitter growth strategist.
+You have been given real engagement data for a Twitter account. Your job is to produce a precise, personalized content playbook — not generic advice.
+
+---
+## ACCOUNT DATA: @{profile_analysis.get('username', 'unknown')}
+
+| Metric | Value |
+|---|---|
+| Tweets analyzed | {profile_analysis.get('tweet_count', 0)} |
+| Total engagement | {profile_analysis.get('total_engagement', 0)} |
+| Avg likes per tweet | {profile_analysis.get('avg_likes', 0):.1f} |
+| Best content format | {best_format} |
+| Best time to post | {posting_time} |
+| Avg viral tweet length | {vi.get('avg_viral_length', 0):.0f} characters |
+| Recurring topics in top tweets | {recurring_topics} |
+
+**TOP PERFORMING TWEETS:**
+{tweets_text}
+
+**LOW PERFORMING TWEETS:**
+{low_tweets_text}
+
+---
+## DELIVERABLES
+
+### 1. VIRAL PATTERN (3 sentences max)
+What is the EXACT formula that makes this user's top tweets succeed?
+- Name the emotional trigger (curiosity / validation / controversy / humour / fear of missing out)
+- Name the structural pattern (e.g. "bold claim + short proof", "relatable problem + twist", "hot take + evidence")
+- Name the topic cluster that drives the most engagement
+Do NOT say "engaging content" or "relatable posts". Be forensic.
+
+### 2. WHAT TO STOP (2 bullets, specific to the low-performing tweets above)
+Name the exact mistake this user keeps making in their low-engagement tweets. Reference the actual tweet data.
+
+### 3. FIVE READY-TO-POST TWEETS
+Write 5 tweets this user can copy-paste and post TODAY.
+
+Rules for each tweet:
+- Must be under 240 characters (count carefully)
+- Must sound like a real person — no corporate tone, no vague inspiration
+- Must be rooted in their recurring topics: {recurring_topics}
+- NO placeholder links like "https://..." — write the full tweet text only
+- NO hashtag spam — max 1 hashtag per tweet if needed
+- Vary the format: one opinion, one list hook, one question, one counterintuitive insight, one personal story opener
+
+Format strictly as:
+**Tweet [N]** *(Format: opinion / list hook / question / insight / story)*
+> [full tweet text — no placeholders]
+*Hook: [name the specific trigger: curiosity / controversy / humour / relatability / surprise]*
+*Why it fits this account: [one sentence tied to their actual data]*
+
+### 4. 3-DAY POSTING PLAN
+Use the best posting time ({posting_time}) and best format ({best_format}).
+If posting time is unknown, pick realistic slots (morning 8-9am, lunch 1pm, evening 7-8pm).
+
+| Day | Time | Format | Topic Direction |
+|-----|------|--------|-----------------|
+| Day 1 | [real time] | [format] | [specific topic from their data] |
+| Day 2 | [real time] | [format] | [specific topic from their data] |
+| Day 3 | [real time] | [format] | [specific topic from their data] |
+
+---
+STRICT RULES:
+- Every tweet must be complete and postable as-is
+- No placeholder links, no "[insert X here]" gaps
+- No generic advice like "be consistent", "use hashtags", "engage with followers"
+- Every recommendation must reference something specific from the data above
+"""
+
+        payload = {
+            "model": self.model_name,
+            "prompt": prompt,
+            "stream": False,
+            "temperature": 0.65,
+            "options": {
+                "num_predict": 1400,
+            }
+        }
+
+        try:
+            with httpx.Client(timeout=120.0) as client:
+                response = client.post(f"{self.base_url}/api/generate", json=payload)
+                response.raise_for_status()
+                result = response.json()
+                return result.get("response", "No response generated by the model.")
+
+        except httpx.ConnectError:
+            return (
+                "⚠️ **Could not connect to local Ollama.**\n"
+                "Make sure Ollama is running: `ollama serve`"
+            )
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                return (
+                    f"⚠️ **Model '{self.model_name}' not found.**\n"
+                    f"Install it by running: `ollama run {self.model_name}`"
+                )
+            return f"⚠️ **Ollama API Error:** {e.response.text}"
+        except Exception as e:
+            logger.error(f"Error connecting to local Ollama: {e}")
+            return f"⚠️ **Unexpected error:** {str(e)}"
+
+    def generate_trend_tweet(self, profile_analysis: Dict[str, Any], trend: str, trend_tweets: list) -> str:
+        """
+        Uses user's top tweets to set a ghostwriting tone, then generates tweets about a trending topic.
+        """
+        top_profile_tweets = profile_analysis.get("top_tweets", [])[:5]
+        
+        user_tweets_text = "\n".join([f"  - \"{t.get('text', '')[:200]}\"" for t in top_profile_tweets])
+        if not user_tweets_text.strip():
+            user_tweets_text = "  (No user tweets found to model tone)"
+
+        trend_context = "\n".join(
+            [f"  - [{t.get('likes', 0)} likes] \"{t.get('text', '')[:150]}\"" for t in trend_tweets]
+        )
+        if not trend_context.strip():
+            trend_context = "  (No strong examples found for this trend)"
+
+        prompt = f"""You are an elite Twitter/X ghostwriter. Your job is to write a viral-worthy tweet for a client about a specific real-time trending topic, perfectly mimicking their specific voice and format.
+
+---
+## CLIENT VOICE PROFILE: @{profile_analysis.get('username', 'unknown')}
+Study these top-performing tweets from the client to understand their tone, sentence length, and structural hooks:
+{user_tweets_text}
+
+## THE TRENDING TOPIC: "{trend}"
+To help you understand the context of what people are saying, here are the current top tweets about this trend:
+{trend_context}
+
+---
+## YOUR TASK
+Write 3 highly engaging draft tweets about "{trend}" as if @{profile_analysis.get('username', 'unknown')} was writing them.
+
+Rules for each tweet:
+- Voice: Must sound EXACTLY like the client's voice profile above.
+- Formatting: Match their use of line breaks, emojis, or punctuation.
+- Length: Strictly under 240 characters. No hashtags unless the client normally uses them.
+- Angle: Take a stance or provide an observation based on how the client usually tweets. Don't be generic.
+
+Format strictly as:
+**Draft 1**
+> [tweet text here]
+*Why this fits their style: [1 sentence explanation]*
+
+**Draft 2**
+> [tweet text here]
+*Why this fits their style: [1 sentence explanation]*
+
+**Draft 3**
+> [tweet text here]
+*Why this fits their style: [1 sentence explanation]*
+"""
+
+        payload = {
+            "model": self.model_name,
+            "prompt": prompt,
+            "stream": False,
+            "temperature": 0.7,  # more creative for drafting
+            "options": {
+                "num_predict": 1000,
+            }
+        }
+
+        try:
+            with httpx.Client(timeout=120.0) as client:
+                response = client.post(f"{self.base_url}/api/generate", json=payload)
+                response.raise_for_status()
+                result = response.json()
+                return result.get("response", "No response generated.")
+
+        except httpx.ConnectError:
+            return "⚠️ **Could not connect to local Ollama.**"
+        except httpx.HTTPStatusError as e:
+            return f"⚠️ **Ollama API Error:** {e.response.text}"
+        except Exception as e:
+            logger.error(f"Error connecting to local Ollama for trend drafting: {e}")
+            return f"⚠️ **Unexpected error:** {str(e)}"

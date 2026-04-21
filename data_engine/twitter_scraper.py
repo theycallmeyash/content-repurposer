@@ -88,6 +88,25 @@ class TwitterScraper:
         self.request_count = 0
         self.max_requests_per_window = 50  # Conservative limit
         self.window_start = time.time()
+    
+    def _extract_media_info(self, tweet) -> Dict:
+        """Extract media information from a twikit tweet object"""
+        media_info = {'has_media': False, 'type': None, 'count': 0}
+        try:
+            media = getattr(tweet, 'media', None)
+            if media and len(media) > 0:
+                media_info['has_media'] = True
+                media_info['count'] = len(media)
+                # Detect type from first media item
+                first = media[0]
+                media_type = getattr(first, 'type', '') or ''
+                if 'video' in media_type.lower() or 'animated_gif' in media_type.lower():
+                    media_info['type'] = 'video' if 'video' in media_type.lower() else 'gif'
+                else:
+                    media_info['type'] = 'image'
+        except Exception:
+            pass
+        return media_info
         
     def _get_client(self):
         """Get a fresh client instance"""
@@ -333,7 +352,25 @@ class TwitterScraper:
         async def _search_task():
             client = self._get_client()
             client.load_cookies(self.cookies_path)
-            return await client.search_tweet(query, product=product, count=limit)
+            
+            # Twikit usually caps count per request at ~20-40
+            req_count = min(limit, 40)
+            tweets_result = await client.search_tweet(query, product=product, count=req_count)
+            
+            all_tweets = list(tweets_result)
+            
+            # Automatically paginate to hit the desired limit
+            while len(all_tweets) < limit:
+                try:
+                    more_tweets = await tweets_result.next()
+                    if not more_tweets:
+                        break
+                    all_tweets.extend(list(more_tweets))
+                except Exception as e:
+                    logger.warning(f"Failed to fetch next page: {e}")
+                    break
+                    
+            return all_tweets[:limit]
 
         try:
              if not os.path.exists(self.cookies_path):
@@ -348,7 +385,6 @@ class TwitterScraper:
              
              results = []
              for tweet in tweets:
-                 print(tweet)
                  results.append({
                      'id': tweet.id,
                      'text': tweet.text,
@@ -363,7 +399,10 @@ class TwitterScraper:
                      'screen_name': tweet.user.screen_name,
                      'created_at': tweet.created_at,
                      'favorite_count': tweet.favorite_count,
-                     'retweet_count': tweet.retweet_count
+                     'retweet_count': tweet.retweet_count,
+                     'view_count': getattr(tweet, 'view_count', 0) or 0,
+                     'reply_count': getattr(tweet, 'reply_count', 0) or 0,
+                     'media': self._extract_media_info(tweet)
                  })
                  
              return results, None
