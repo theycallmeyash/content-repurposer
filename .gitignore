@@ -1,35 +1,32 @@
-# Virtual Environment
-venv/
-env/
-ENV/
-
-# Environment variables
-.env
-
-# Python cache
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-
-# Streamlit
-.streamlit/
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# OS
-.DS_Store
-Thumbs.db
-
 # Logs
+logs
 *.log
-last_scraped.html
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
 
-# Project Data
-twitter_cookies.json
-twitter_cache/
-real_trends.json
+node_modules
+dist
+dist-ssr
+.output
+.vinxi
+.tanstack/**
+.nitro
+*.local
+
+# Wrangler / Cloudflare
+.wrangler/
+.dev.vars
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
