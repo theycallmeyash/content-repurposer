@@ -33,3 +33,4 @@ last_scraped.html
 twitter_cookies.json
 twitter_cache/
 real_trends.json
+trends_cache.json
