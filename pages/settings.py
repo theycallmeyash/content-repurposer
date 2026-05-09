@@ -5,7 +5,7 @@ import sys
 # Add root directory to python path to import modules
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from styles import apply_custom_css
+from ui.styles import apply_custom_css
 
 st.set_page_config(
     page_title="Settings | Prism",

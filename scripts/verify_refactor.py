@@ -1,5 +1,5 @@
 
-from content_extractor import ContentExtractor, YouTubeExtractor, BlogExtractor, RawTextExtractor
+from core.content_extractor import ContentExtractor, YouTubeExtractor, BlogExtractor, RawTextExtractor
 
 def test_refactor():
     print("Testing Raw Text Extraction...")

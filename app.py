@@ -1,5 +1,5 @@
 import streamlit as st
-from styles import apply_custom_css
+from ui.styles import apply_custom_css
 
 # Page Config
 st.set_page_config(

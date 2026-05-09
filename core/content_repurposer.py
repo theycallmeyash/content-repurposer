@@ -12,9 +12,9 @@ import logging
 from datetime import datetime
 
 # New imports for architecture refactor
-from models import RepurposedContent, BrandSoul, TrendContext
-from prompts import REPURPOSE_PROMPT_TEMPLATE, SYSTEM_PROMPT_DEFAULT
-from vector_store import BrandVectorStore
+from core.models import RepurposedContent, BrandSoul, TrendContext
+from core.prompts import REPURPOSE_PROMPT_TEMPLATE, SYSTEM_PROMPT_DEFAULT
+from core.vector_store import BrandVectorStore
 
 logging.basicConfig(
     level=logging.INFO,

@@ -6,9 +6,9 @@ from dotenv import load_dotenv
 # Add project root to path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from brand_profile_engine import BrandProfileEngine
-from content_repurposer import ContentRepurposer
-from models import TrendContext
+from core.brand_profile_engine import BrandProfileEngine
+from core.content_repurposer import ContentRepurposer
+from core.models import TrendContext
 
 load_dotenv()
 

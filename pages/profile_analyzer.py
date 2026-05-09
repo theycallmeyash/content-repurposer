@@ -8,7 +8,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from service.twitter import TwitterProfileAnalyzer
 from service.llm_analyzer import ContentLLMAnalyzer
-from styles import apply_custom_css
+from ui.styles import apply_custom_css
 import pandas as pd
 import json
 

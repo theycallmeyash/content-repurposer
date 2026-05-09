@@ -3,7 +3,7 @@ import json
 import os
 import requests
 from typing import List, Dict, Any, Optional
-from models import BrandSoul
+from core.models import BrandSoul
 from pathlib import Path
 
 logger = logging.getLogger(__name__)

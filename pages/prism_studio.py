@@ -5,13 +5,13 @@ import sys
 # Add root directory to python path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from styles import apply_custom_css
-from content_extractor import ContentExtractor
-from content_repurposer import ContentRepurposer
-from brand_profile_engine import BrandProfileEngine
+from ui.styles import apply_custom_css
+from core.content_extractor import ContentExtractor
+from core.content_repurposer import ContentRepurposer
+from core.brand_profile_engine import BrandProfileEngine
 from data_engine.trend_scraper_v2 import TrendScraperV2
 from data_engine.brand_collector import BrandDataCollector
-from models import BrandSoul, TrendContext
+from core.models import BrandSoul, TrendContext
 
 st.set_page_config(
     page_title="Prism Studio",
