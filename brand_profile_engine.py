@@ -1,5 +1,6 @@
 import logging
 import json
+import os
 import requests
 from typing import List, Dict, Any, Optional
 from models import BrandSoul
@@ -38,7 +39,9 @@ class BrandProfileEngine:
     Engine that takes a collection of posts and distills them into a BrandSoul profile.
     Uses local Ollama.
     """
-    def __init__(self, ollama_url: str = "http://localhost:11434", model_name: str = "llama3.1:8b"):
+    def __init__(self, ollama_url: str = None, model_name: str = None):
+        ollama_url = ollama_url or os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+        model_name = model_name or os.getenv("OLLAMA_MODEL", "gemma4:26b")
         self.ollama_url = ollama_url
         self.model_name = model_name
 

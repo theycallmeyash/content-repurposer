@@ -353,11 +353,51 @@ class TwitterScraper:
             client = self._get_client()
             client.load_cookies(self.cookies_path)
             
+            import re
+            user_match = re.search(r'from:([A-Za-z0-9_]+)', query)
+            if user_match:
+                username = user_match.group(1)
+                logger.info(f"Using get_user_tweets fallback for {username}")
+                try:
+                    user = await client.get_user_by_screen_name(username)
+                    tweets_result = await client.get_user_tweets(user.id, 'Tweets')
+                    all_tweets = list(tweets_result)
+                    
+                    filtered_tweets = []
+                    exclude_replies = '-filter:replies' in query
+                    exclude_retweets = '-filter:retweets' in query
+                    
+                    while len(filtered_tweets) < limit:
+                        for t in all_tweets:
+                            is_reply = bool(getattr(t, 'in_reply_to_user_id', None) or getattr(t, 'in_reply_to_status_id', None))
+                            is_retweet = t.text.startswith('RT @') if getattr(t, 'text', '') else False
+                            
+                            if exclude_replies and is_reply: continue
+                            if exclude_retweets and is_retweet: continue
+                            
+                            filtered_tweets.append(t)
+                            if len(filtered_tweets) >= limit: break
+                            
+                        if len(filtered_tweets) >= limit: break
+                        try:
+                            more_tweets = await tweets_result.next()
+                            if not more_tweets: break
+                            all_tweets = list(more_tweets)
+                        except Exception as e:
+                            logger.warning(f"Fallback pagination failed: {e}")
+                            break
+                    
+                    print(f"DEBUG search_tweets: total after fallback filtering = {len(filtered_tweets)} tweets")
+                    return filtered_tweets[:limit]
+                except Exception as e:
+                    logger.warning(f"Fallback get_user_tweets failed: {e}. Trying regular search.")
+
             # Twikit usually caps count per request at ~20-40
             req_count = min(limit, 40)
             tweets_result = await client.search_tweet(query, product=product, count=req_count)
             
             all_tweets = list(tweets_result)
+            print(f"DEBUG search_tweets: initial batch = {len(all_tweets)} tweets")
             
             # Automatically paginate to hit the desired limit
             while len(all_tweets) < limit:
@@ -370,6 +410,7 @@ class TwitterScraper:
                     logger.warning(f"Failed to fetch next page: {e}")
                     break
                     
+            print(f"DEBUG search_tweets: total after pagination = {len(all_tweets)} tweets")
             return all_tweets[:limit]
 
         try:
@@ -382,6 +423,7 @@ class TwitterScraper:
                  return asyncio.run(_search_task())
              
              tweets = self._retry_with_backoff(search)
+             print(f"DEBUG search_tweets: raw twikit objects = {len(tweets)}")
              
              results = []
              for tweet in tweets:
