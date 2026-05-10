@@ -13,7 +13,7 @@ class TwitterProfileAnalyzer:
             self.scraper = TwitterScraperAdvanced()
         else:
             self.scraper = scraper
-    print('inside profile analyzer')
+
     def get_user_timeline(
         self,
         username: str,

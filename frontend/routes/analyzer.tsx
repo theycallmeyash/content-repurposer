@@ -1,15 +1,19 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { TopNav } from "../components/TopNav";
 import { Footer } from "../components/Footer";
 import { Terminal } from "../components/Terminal";
 import { SectionHeader } from "../components/SectionHeader";
+import { analyzeXProfile, getXAuthStatus, importXCookies } from "../lib/api";
 
 export const Route = createFileRoute("/analyzer")({
   head: () => ({
     meta: [
       { title: "Analyzer · Press/Engine" },
-      { name: "description", content: "Ingest a social profile. Synthesize a private voice model." },
+      {
+        name: "description",
+        content: "Ingest a social profile. Synthesize a private voice model.",
+      },
     ],
   }),
   component: Analyzer,
@@ -33,11 +37,10 @@ interface ScrapeSummary {
     tone_vectors?: Array<{ k: string; v: number }>;
     highlights?: string[];
   };
-  storagePath?: string;
 }
 
 const PLATFORMS: PlatformTile[] = [
-  { code: "IG", key: "instagram", name: "Instagram", implemented: true },
+  { code: "IG", key: "instagram", name: "Instagram", implemented: false },
   { code: "TT", key: "tiktok", name: "TikTok", implemented: false },
   { code: "XX", key: "x", name: "X / Twitter", implemented: true },
   { code: "LI", key: "linkedin", name: "LinkedIn", implemented: false },
@@ -64,7 +67,6 @@ const DEFAULT_HIGHLIGHTS = [
   "Rituals · craft · materials as core themes.",
 ];
 
-const ENGINE_BASE_URL = import.meta.env.VITE_ANALYZER_ENGINE_URL ?? "http://127.0.0.1:8788";
 const SLEEP_MS = 260;
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -80,51 +82,17 @@ async function scrapeProfile(platform: PlatformKey, handle: string): Promise<Scr
     throw new Error("Handle is required.");
   }
 
-  if (platform === "linkedin") {
-    throw new Error("LinkedIn connector is intentionally deferred for now.");
-  }
-
-  if (platform !== "instagram" && platform !== "x") {
+  if (platform !== "x") {
     throw new Error(`${platform} is not implemented yet.`);
   }
 
-  const response = await fetch(`${ENGINE_BASE_URL}/scrape/${platform}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ handle: normalizedHandle }),
-  });
-
-  if (!response.ok) {
-    let detail = "Engine request failed.";
-    try {
-      const payload = (await response.json()) as { detail?: string };
-      if (payload.detail) {
-        detail = payload.detail;
-      }
-    } catch {
-      const body = await response.text();
-      if (body) detail = body;
-    }
-    throw new Error(detail);
-  }
-
-  const payload = (await response.json()) as {
-    posts?: number;
-    comments?: number;
-    collected_tweets?: number;
-    analysis?: {
-      tone_vectors?: Array<{ k: string; v: number }>;
-      highlights?: string[];
-    };
-    storage_path?: string;
-  };
+  const payload = await analyzeXProfile(normalizedHandle, 50);
 
   return {
     posts: payload.posts ?? 0,
     comments: payload.comments ?? 0,
     collectedTweets: payload.collected_tweets ?? 0,
     analysis: payload.analysis,
-    storagePath: payload.storage_path,
   };
 }
 
@@ -134,6 +102,11 @@ function Analyzer() {
   const [terminalLines, setTerminalLines] = useState<string[]>(bootLines);
   const [toneVectors, setToneVectors] = useState(DEFAULT_TONE_VECTORS);
   const [clusterHighlights, setClusterHighlights] = useState<string[]>(DEFAULT_HIGHLIGHTS);
+  const [cookieJson, setCookieJson] = useState("");
+  const [cookiesPresent, setCookiesPresent] = useState<boolean | null>(null);
+  const [cookiesPath, setCookiesPath] = useState("");
+  const [savingCookies, setSavingCookies] = useState(false);
+  const [cookieMessage, setCookieMessage] = useState("");
   const [platformState, setPlatformState] = useState<Record<PlatformKey, PlatformState>>({
     instagram: "idle",
     linkedin: "idle",
@@ -142,6 +115,56 @@ function Analyzer() {
     youtube: "idle",
     tiktok: "idle",
   });
+
+  const refreshCookieStatus = async () => {
+    try {
+      const status = await getXAuthStatus();
+      setCookiesPresent(status.cookies_present);
+      setCookiesPath(status.cookies_path);
+    } catch (error) {
+      setCookiesPresent(false);
+      setCookieMessage(error instanceof Error ? error.message : "Could not check cookie status.");
+    }
+  };
+
+  useEffect(() => {
+    void refreshCookieStatus();
+  }, []);
+
+  const saveCookies = async () => {
+    if (!cookieJson.trim()) {
+      setCookieMessage("Paste Cookie-Editor JSON first.");
+      return;
+    }
+
+    setSavingCookies(true);
+    setCookieMessage("");
+
+    try {
+      const result = await importXCookies(cookieJson);
+      setCookiesPresent(true);
+      setCookiesPath(result.cookies_path);
+      setCookieJson("");
+      setCookieMessage(result.message);
+      setTerminalLines([
+        " > auth.x.cookies --import",
+        lineWithStatus("validating cookie json", "[OK]"),
+        lineWithStatus("persisting session", "[OK]"),
+        `path: ${result.cookies_path}`,
+      ]);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Cookie import failed.";
+      setCookiesPresent(false);
+      setCookieMessage(message);
+      setTerminalLines([
+        " > auth.x.cookies --import",
+        lineWithStatus("validating cookie json", "[ERR]"),
+        `error: ${message}`,
+      ]);
+    } finally {
+      setSavingCookies(false);
+    }
+  };
 
   const connectedCount = useMemo(
     () => Object.values(platformState).filter((state) => state === "connected").length,
@@ -171,7 +194,9 @@ function Analyzer() {
     setRunning(true);
     setPlatformState((prev) => ({ ...prev, [platform.key]: "connecting" }));
 
-    const nextLines = [` > engine.ingest --target=${handle} --platform=${platform.name.toLowerCase()}`];
+    const nextLines = [
+      ` > engine.ingest --target=${handle} --platform=${platform.name.toLowerCase()}`,
+    ];
     const pushLine = (line: string) => {
       nextLines.push(line);
       setTerminalLines([...nextLines]);
@@ -194,14 +219,13 @@ function Analyzer() {
       await delay(SLEEP_MS);
       pushLine(lineWithStatus(`scanning ${summary.comments.toLocaleString()} comments`, "[OK]"));
       await delay(SLEEP_MS);
-      pushLine(lineWithStatus(`collecting ${summary.collectedTweets.toLocaleString()} tweets`, "[OK]"));
+      pushLine(
+        lineWithStatus(`collecting ${summary.collectedTweets.toLocaleString()} tweets`, "[OK]"),
+      );
       await delay(SLEEP_MS);
       pushLine(lineWithStatus("extracting hashtag clusters", "[OK]"));
       await delay(SLEEP_MS);
       pushLine(lineWithStatus("extracting emoji density", "[OK]"));
-      if (summary.storagePath) {
-        pushLine(`persisted dataset: ${summary.storagePath}`);
-      }
       pushLine("> ready.");
 
       if (summary.analysis?.tone_vectors?.length) {
@@ -236,7 +260,12 @@ function Analyzer() {
     <div className="min-h-screen bg-newsprint flex flex-col">
       <TopNav />
 
-      <SectionHeader num="02" kicker="Step 01 — Ingest" title="Synthesize a private voice." right="↘ read-only OAuth · zero data egress" />
+      <SectionHeader
+        num="02"
+        kicker="Step 01 — Ingest"
+        title="Synthesize a private voice."
+        right="↘ read-only OAuth · zero data egress"
+      />
 
       {/* INGEST FORM */}
       <section className="grid grid-cols-12 border-b border-ink">
@@ -257,7 +286,11 @@ function Analyzer() {
               className="flex-1 bg-transparent font-display text-4xl md:text-5xl outline-none placeholder:text-foreground/20"
               placeholder="your_handle"
             />
-            <button onClick={() => void runXFromHandle()} className="ed-btn ml-4" disabled={running}>
+            <button
+              onClick={() => void runXFromHandle()}
+              className="ed-btn ml-4"
+              disabled={running}
+            >
               {running ? "Analyzing..." : "Analyze X →"}
             </button>
           </div>
@@ -265,6 +298,55 @@ function Analyzer() {
           <div className="font-mono-ed text-[10px] uppercase tracking-widest text-foreground/50 mb-4">
             Connected platforms · {connectedCount}/6
           </div>
+
+          <div className="mb-6 border border-ink bg-newsprint p-5">
+            <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+              <div>
+                <div className="font-mono-ed text-[10px] uppercase tracking-widest text-foreground/50 mb-2">
+                  X session cookies
+                </div>
+                <div className="font-display text-2xl leading-none">
+                  {cookiesPresent ? "Cookies loaded" : "Fresh cookies required"}
+                  <span className="text-indigo-electric">.</span>
+                </div>
+                {cookiesPath && (
+                  <div className="mt-2 break-all font-mono-ed text-[10px] uppercase tracking-widest text-foreground/45">
+                    {cookiesPath}
+                  </div>
+                )}
+              </div>
+              <button
+                className="ed-btn ed-btn-ghost h-10 px-3 text-xs"
+                onClick={() => void refreshCookieStatus()}
+                disabled={savingCookies}
+              >
+                Check status
+              </button>
+            </div>
+
+            <textarea
+              value={cookieJson}
+              onChange={(event) => setCookieJson(event.target.value)}
+              rows={5}
+              className="mt-4 w-full border border-ink bg-card p-3 font-mono-ed text-xs outline-none"
+              placeholder='Paste Cookie-Editor JSON export from x.com, for example [{"name":"auth_token","value":"..."},{"name":"ct0","value":"..."}]'
+            />
+            <div className="mt-3 flex flex-col gap-3 md:flex-row md:items-center">
+              <button
+                className="ed-btn"
+                onClick={() => void saveCookies()}
+                disabled={savingCookies}
+              >
+                {savingCookies ? "Saving..." : "Import cookies"}
+              </button>
+              {cookieMessage && (
+                <div className="font-mono-ed text-[10px] uppercase tracking-widest text-foreground/60">
+                  {cookieMessage}
+                </div>
+              )}
+            </div>
+          </div>
+
           <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
             {PLATFORMS.map((p) => (
               <button
@@ -276,8 +358,12 @@ function Analyzer() {
                 }`}
               >
                 <div className="flex items-center justify-between mb-3">
-                  <span className="font-mono-ed text-xs tracking-widest border border-current px-1.5 py-0.5">{p.code}</span>
-                  <span className={`size-2 ${platformState[p.key] === "connected" ? "bg-indigo-electric" : "bg-current opacity-30"}`} />
+                  <span className="font-mono-ed text-xs tracking-widest border border-current px-1.5 py-0.5">
+                    {p.code}
+                  </span>
+                  <span
+                    className={`size-2 ${platformState[p.key] === "connected" ? "bg-indigo-electric" : "bg-current opacity-30"}`}
+                  />
                 </div>
                 <div className="font-display text-xl leading-none">{p.name}</div>
                 <div className="font-mono-ed text-[10px] uppercase tracking-widest opacity-60 mt-2">
@@ -298,8 +384,9 @@ function Analyzer() {
               ⚠ Privacy clause
             </div>
             <p className="text-sm leading-relaxed text-foreground/80">
-              Your model is fine-tuned within your tenant. Weights are encrypted at rest.
-              No data is shared with foundation providers. Revoke OAuth at any time and the model is shredded within 24h.
+              Your model is fine-tuned within your tenant. Weights are encrypted at rest. No data is
+              shared with foundation providers. Revoke OAuth at any time and the model is shredded
+              within 24h.
             </p>
           </div>
         </div>
@@ -310,7 +397,12 @@ function Analyzer() {
       </section>
 
       {/* VOICE FINGERPRINT */}
-      <SectionHeader num="03" kicker="Step 02 — Synthesize" title="Voice fingerprint" right="↘ 14 dimensions · normalized 0–100" />
+      <SectionHeader
+        num="03"
+        kicker="Step 02 — Synthesize"
+        title="Voice fingerprint"
+        right="↘ 14 dimensions · normalized 0–100"
+      />
 
       <section className="grid grid-cols-12 border-b border-ink">
         <div className="col-span-12 lg:col-span-8 border-r border-ink/15 p-8 bg-card">
@@ -326,7 +418,10 @@ function Analyzer() {
                 </div>
                 <div className="h-2 bg-ink/10 relative">
                   <div className="h-full bg-ink" style={{ width: `${t.v}%` }} />
-                  <div className="absolute top-0 h-full w-px bg-indigo-electric" style={{ left: `${t.v}%` }} />
+                  <div
+                    className="absolute top-0 h-full w-px bg-indigo-electric"
+                    style={{ left: `${t.v}%` }}
+                  />
                 </div>
               </div>
             ))}
@@ -348,7 +443,10 @@ function Analyzer() {
               </li>
             ))}
           </ul>
-          <Link to="/generator" className="ed-btn bg-newsprint text-ink border-newsprint w-full mt-8 hover:bg-indigo-electric hover:border-indigo-electric hover:text-newsprint">
+          <Link
+            to="/generator"
+            className="ed-btn bg-newsprint text-ink border-newsprint w-full mt-8 hover:bg-indigo-electric hover:border-indigo-electric hover:text-newsprint"
+          >
             Open Generator →
           </Link>
         </div>

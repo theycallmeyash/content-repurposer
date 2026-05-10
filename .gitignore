@@ -29,6 +29,11 @@ Thumbs.db
 *.log
 last_scraped.html
 
+# Frontend generated artifacts
+frontend/.wrangler/
+frontend/dist/
+frontend/node_modules/
+
 # Project Data
 twitter_cookies.json
 twitter_cache/

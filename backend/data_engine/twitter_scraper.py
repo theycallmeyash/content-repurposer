@@ -8,6 +8,7 @@ import time
 from typing import Dict, List, Optional, Tuple, Any
 from functools import wraps
 import hashlib
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -82,8 +83,9 @@ class TwitterScraperCache:
 
 class TwitterScraper:
     def __init__(self):
-        self.cookies_path = 'twitter_cookies.json'
-        self.cache = TwitterScraperCache()
+        project_root = Path(__file__).resolve().parents[2]
+        self.cookies_path = os.getenv("TWITTER_COOKIES_PATH", str(project_root / "twitter_cookies.json"))
+        self.cache = TwitterScraperCache(cache_dir=str(project_root / "twitter_cache"))
         self.rate_limit_reset = None
         self.request_count = 0
         self.max_requests_per_window = 50  # Conservative limit
